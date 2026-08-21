@@ -616,3 +616,104 @@ def test_review_shows_low_confidence_warning_glyph(client):
 
 def test_in_flight_scan_progress_returns_none_by_default():
     assert views_module._in_flight_scan_progress() is None
+
+
+# --- video / Live Photo badges (T9) ----------------------------------------
+
+
+@pytest.mark.django_db
+def test_grid_shows_video_glyph_badge(client):
+    unique = "t_t9_grid_video_badge"
+    video = _db_photo(f"{unique}/clip.mov", provenance=unique, media_type=Photo.MEDIA_VIDEO)
+
+    response = client.get(reverse("grid"), {"provenance": unique})
+
+    body = response.content.decode()
+    assert reverse("preview", args=[video.pk]) in body
+    assert "badge-video" in body
+
+
+@pytest.mark.django_db
+def test_grid_shows_live_badge_for_paired_image(client):
+    unique = "t_t9_grid_live_badge"
+    image = _db_photo(
+        f"{unique}/img.jpg",
+        provenance=unique,
+        media_type=Photo.MEDIA_IMAGE,
+        live_photo_video_path=f"{unique}/img.mov",
+    )
+    video = _db_photo(
+        f"{unique}/img.mov",
+        provenance=unique,
+        media_type=Photo.MEDIA_VIDEO,
+        captured_at=datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC),
+    )
+
+    response = client.get(reverse("grid"), {"provenance": unique})
+
+    body = response.content.decode()
+    assert reverse("preview", args=[image.pk]) in body
+    assert reverse("preview", args=[video.pk]) not in body  # companion hidden
+    assert "badge-live" in body
+
+
+@pytest.mark.django_db
+def test_set_status_grid_partial_shows_live_badge(client):
+    unique = "t_t9_set_status_live_badge"
+    _touch(f"{unique}/img.jpg")
+    image = _db_photo(
+        f"{unique}/img.jpg",
+        provenance=unique,
+        media_type=Photo.MEDIA_IMAGE,
+        live_photo_video_path=f"{unique}/img.mov",
+    )
+
+    response = client.post(
+        reverse("set-status", args=[image.pk]),
+        {"status": "selected", "context": "grid"},
+    )
+
+    assert response.status_code == 200
+    assert "badge-live" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_review_video_uses_stream_url(client):
+    unique = "t_t9_review_video"
+    photo = _db_photo(f"{unique}/clip.mov", provenance=unique, media_type=Photo.MEDIA_VIDEO)
+
+    response = client.get(reverse("review", args=[photo.pk]))
+
+    body = response.content.decode()
+    assert reverse("stream", args=[photo.pk]) in body
+    assert "<video" in body
+
+
+@pytest.mark.django_db
+def test_review_live_photo_renders_toggle_elements(client):
+    unique = "t_t9_review_live"
+    image = _db_photo(
+        f"{unique}/img.jpg",
+        provenance=unique,
+        media_type=Photo.MEDIA_IMAGE,
+        live_photo_video_path=f"{unique}/img.mov",
+    )
+
+    response = client.get(reverse("review", args=[image.pk]))
+
+    body = response.content.decode()
+    assert 'id="live-badge"' in body
+    assert 'id="review-live-video"' in body
+    assert f"{reverse('stream', args=[image.pk])}?companion=1" in body
+
+
+@pytest.mark.django_db
+def test_review_non_live_photo_has_no_toggle_elements(client):
+    unique = "t_t9_review_not_live"
+    photo = _db_photo(f"{unique}/img.jpg", provenance=unique, media_type=Photo.MEDIA_IMAGE)
+
+    response = client.get(reverse("review", args=[photo.pk]))
+
+    body = response.content.decode()
+    assert 'id="live-badge"' not in body
+    assert 'id="review-live-video"' not in body

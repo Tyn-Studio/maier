@@ -8,6 +8,7 @@ pattern for `start_background_scan`.
 
 import hashlib
 import io
+import os
 import random
 import shutil
 import threading
@@ -19,13 +20,16 @@ import imagehash
 import pytest
 from PIL import Image, ImageDraw
 
+from culler.core import moves
 from culler.core import phaseb as phaseb_module
+from culler.core import queries as queries_module
 from culler.core.models import DuplicatePair, Photo
 from culler.core.phaseb import (
     PhaseBProgress,
     apply_status_to_group,
     duplicate_counts,
     duplicate_group,
+    live_photo_companion_paths,
     non_representative_pks,
     run_phase_b,
     start_phase_b,
@@ -497,6 +501,263 @@ def test_apply_status_to_group_no_duplicates_leaves_group_query_empty(tmp_path):
 
     assert updated.status == Photo.STATUS_SELECTED
     assert (tmp_path / "selected/solo.jpg").exists()
+
+
+# --- Live Photo pairing (SPEC §6 item 4 / §6.4 fallback) -------------------
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_pairs_same_dir_within_window(tmp_path):
+    captured = datetime(2025, 6, 14, 12, 0, 0, tzinfo=UTC)
+    image = _db_photo(
+        "a/IMG_001.jpg",
+        sha256="10" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    _db_photo(
+        "a/IMG_001.mov",
+        sha256="11" * 32,
+        captured_at=captured + timedelta(milliseconds=500),
+        media_type=Photo.MEDIA_VIDEO,
+    )
+
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path == "a/IMG_001.mov"
+    assert live_photo_companion_paths() == {"a/IMG_001.mov"}
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_exact_one_second_boundary_pairs(tmp_path):
+    captured = datetime(2025, 6, 14, 12, 0, 0, tzinfo=UTC)
+    image = _db_photo(
+        "a/IMG_002.jpg",
+        sha256="12" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    _db_photo(
+        "a/IMG_002.mov",
+        sha256="13" * 32,
+        captured_at=captured + timedelta(seconds=1),
+        media_type=Photo.MEDIA_VIDEO,
+    )
+
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path == "a/IMG_002.mov"
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_no_pairing_across_directories(tmp_path):
+    captured = datetime(2025, 6, 14, 12, 0, 0, tzinfo=UTC)
+    image = _db_photo(
+        "a/IMG_003.jpg",
+        sha256="14" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    _db_photo(
+        "b/IMG_003.mov",
+        sha256="15" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_VIDEO,
+    )
+
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path is None
+    assert live_photo_companion_paths() == set()
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_no_pairing_outside_time_window(tmp_path):
+    captured = datetime(2025, 6, 14, 12, 0, 0, tzinfo=UTC)
+    image = _db_photo(
+        "a/IMG_004.jpg",
+        sha256="16" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    _db_photo(
+        "a/IMG_004.mov",
+        sha256="17" * 32,
+        captured_at=captured + timedelta(seconds=2),
+        media_type=Photo.MEDIA_VIDEO,
+    )
+
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path is None
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_idempotent_on_rerun(tmp_path):
+    captured = datetime(2025, 6, 14, 12, 0, 0, tzinfo=UTC)
+    image = _db_photo(
+        "a/IMG_005.jpg",
+        sha256="18" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    _db_photo(
+        "a/IMG_005.mov",
+        sha256="19" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_VIDEO,
+    )
+
+    run_phase_b(tmp_path, PhaseBProgress())
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path == "a/IMG_005.mov"
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_self_heals_dangling_companion(tmp_path):
+    image = _db_photo(
+        "a/IMG_006.jpg",
+        sha256="1a" * 32,
+        media_type=Photo.MEDIA_IMAGE,
+        live_photo_video_path="a/IMG_006_OLD.mov",  # no such Photo row exists
+    )
+
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path is None
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_self_heal_allows_re_pairing_when_candidate_appears(tmp_path):
+    captured = datetime(2025, 6, 14, 12, 0, 0, tzinfo=UTC)
+    image = _db_photo(
+        "a/IMG_007.jpg",
+        sha256="1b" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_IMAGE,
+        live_photo_video_path="a/IMG_007_GONE.mov",  # dangling: renamed externally
+    )
+    _db_photo(
+        "a/IMG_007.mov",
+        sha256="1c" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_VIDEO,
+    )
+
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path == "a/IMG_007.mov"
+
+
+@pytest.mark.django_db
+def test_live_photo_companion_excluded_from_filtered_photos(tmp_path):
+    captured = datetime(2025, 6, 14, 12, 0, 0, tzinfo=UTC)
+    image = _db_photo(
+        "a/IMG_008.jpg",
+        sha256="1d" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    video = _db_photo(
+        "a/IMG_008.mov",
+        sha256="1e" * 32,
+        captured_at=captured,
+        media_type=Photo.MEDIA_VIDEO,
+    )
+
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    visible = set(queries_module.filtered_photos({}).values_list("pk", flat=True))
+    assert image.pk in visible
+    assert video.pk not in visible
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_via_full_scan_pipeline(tmp_path):
+    """End-to-end: real files, capture date derived by metadata.py's own
+    fallback chain (EXIF for the image, mtime for the video -- exactly the
+    fallback rule SPEC §6.4 describes), video mtime set to match the
+    image's derived captured_at instant.
+    """
+    build_fixture_folder(tmp_path, {"a/IMG_009.jpg": {"datetime_original": "2025:06:14 12:00:00"}})
+    scan(tmp_path, ScanProgress())
+    image = Photo.objects.get(relative_path="a/IMG_009.jpg")
+
+    mov_path = tmp_path / "a/IMG_009.mov"
+    mov_path.write_bytes(b"fake-quicktime-bytes")
+    ts = image.captured_at.timestamp()
+    os.utime(mov_path, (ts, ts))
+
+    scan(tmp_path, ScanProgress())  # phase A picks up the .mov
+    run_phase_b(tmp_path, PhaseBProgress())  # deterministic (vs. the background pass)
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path == "a/IMG_009.mov"
+
+    video = Photo.objects.get(relative_path="a/IMG_009.mov")
+    visible = set(queries_module.filtered_photos({}).values_list("pk", flat=True))
+    assert image.pk in visible
+    assert video.pk not in visible
+
+
+@pytest.mark.django_db
+def test_live_photo_pairing_survives_select_round_trip(tmp_path):
+    """Culling the image moves its companion too (moves.py, T2); the pairing
+    (image.live_photo_video_path) reflects the new location immediately.
+    The companion's *own* Photo row is a separate row that moves.py doesn't
+    touch -- like any other externally-changed path, it's reconciled by the
+    next scan (SPEC: filesystem is the source of truth, reconciled on every
+    scan). Known/flagged gap: between the move and that rescan, the
+    companion row's cached relative_path is briefly stale.
+    """
+    build_fixture_folder(tmp_path, {"a/IMG_010.jpg": {"datetime_original": "2025:06:14 12:00:00"}})
+    scan(tmp_path, ScanProgress())
+    image = Photo.objects.get(relative_path="a/IMG_010.jpg")
+
+    mov_path = tmp_path / "a/IMG_010.mov"
+    mov_path.write_bytes(b"fake-quicktime-bytes")
+    ts = image.captured_at.timestamp()
+    os.utime(mov_path, (ts, ts))
+
+    scan(tmp_path, ScanProgress())
+    run_phase_b(tmp_path, PhaseBProgress())
+
+    image.refresh_from_db()
+    assert image.live_photo_video_path == "a/IMG_010.mov"
+    video = Photo.objects.get(relative_path="a/IMG_010.mov")
+
+    moves.apply_status(tmp_path, image, Photo.STATUS_SELECTED)
+    image.refresh_from_db()
+    assert image.relative_path == "selected/a/IMG_010.jpg"
+    assert image.live_photo_video_path == "selected/a/IMG_010.mov"
+    assert (tmp_path / "selected/a/IMG_010.mov").exists()
+    assert not (tmp_path / "a/IMG_010.mov").exists()
+
+    # a rescan reconciles the companion's own row to its new location (same
+    # size+mtime move-reconciliation scan.py already implements)
+    scan(tmp_path, ScanProgress())
+    video.refresh_from_db()
+    assert video.relative_path == "selected/a/IMG_010.mov"
+
+    visible = set(queries_module.filtered_photos({}).values_list("pk", flat=True))
+    assert image.pk in visible
+    assert video.pk not in visible
+
+    # unflag: both move back
+    image.refresh_from_db()
+    moves.apply_status(tmp_path, image, Photo.STATUS_OPTIONAL)
+    image.refresh_from_db()
+    assert image.relative_path == "a/IMG_010.jpg"
+    assert image.live_photo_video_path == "a/IMG_010.mov"
+    assert (tmp_path / "a/IMG_010.mov").exists()
 
 
 # --- start_phase_b threading ---------------------------------------------

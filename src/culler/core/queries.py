@@ -24,6 +24,7 @@ def filtered_photos(params: QueryDict | dict[str, Any]) -> QuerySet[Photo]:
     """
     qs = Photo.objects.filter(missing=False).order_by("captured_at", "pk")
     qs = qs.exclude(pk__in=phaseb.non_representative_pks())
+    qs = qs.exclude(relative_path__in=phaseb.live_photo_companion_paths())
 
     status = params.get("status")
     if status:

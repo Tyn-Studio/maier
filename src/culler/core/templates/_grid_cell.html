@@ -3,6 +3,12 @@
     <img loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
   </a>
   <span class="badge badge-{{ photo.status }}">{{ photo.get_status_display }}</span>
+  {% if photo.media_type == "video" %}
+  <span class="badge badge-video" title="Video">&#9654;</span>
+  {% endif %}
+  {% if photo.is_live %}
+  <span class="badge badge-live" title="Live Photo">LIVE</span>
+  {% endif %}
   {% if photo.dupe_count > 1 %}
   <span class="badge badge-dupe">&times;{{ photo.dupe_count }}</span>
   {% endif %}

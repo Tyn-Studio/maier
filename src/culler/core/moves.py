@@ -74,10 +74,25 @@ def apply_status(folder: Path, photo: Photo, new_status: str) -> Photo:
     if photo.live_photo_video_path:
         companion_src = folder / photo.live_photo_video_path
         if companion_src.exists():
-            companion_dest = final_dest.parent / PurePosixPath(photo.live_photo_video_path).name
+            old_companion_rel = photo.live_photo_video_path
+            companion_dest = final_dest.parent / PurePosixPath(old_companion_rel).name
             companion_final = _unique_path(companion_dest)
             os.rename(companion_src, companion_final)
-            photo.live_photo_video_path = companion_final.relative_to(folder).as_posix()
+            new_companion_rel = companion_final.relative_to(folder).as_posix()
+            photo.live_photo_video_path = new_companion_rel
+            # The companion has its own Photo row (scan indexes the .mov as
+            # a standalone video). Keep it in step with the file so it stays
+            # hidden behind the image instead of transiently reappearing in
+            # the grid with a stale path until the next scan.
+            from .scan import _status_and_provenance
+
+            comp_status, comp_provenance = _status_and_provenance(Path(new_companion_rel))
+            Photo.objects.filter(relative_path=old_companion_rel).exclude(pk=photo.pk).update(
+                relative_path=new_companion_rel,
+                status=comp_status,
+                provenance=comp_provenance,
+                status_changed_at=timezone.now(),
+            )
         # else: companion missing on disk -- move the image anyway, leave the
         # recorded path for the scanner to reconcile.
 

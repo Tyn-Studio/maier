@@ -16,11 +16,11 @@ import hashlib
 import threading
 from dataclasses import dataclass, field
 from datetime import datetime
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 import imagehash
 from django.db import connection
-from django.db.models import Count, QuerySet
+from django.db.models import Count, Q, QuerySet
 from PIL import Image, UnidentifiedImageError
 
 from . import moves
@@ -32,6 +32,13 @@ _HASH_CHUNK = 1024 * 1024  # 1 MiB, per brief
 # SPEC §6.3: near-dupe scan is time-windowed (±8s) and hamming-thresholded.
 _PHASH_TIME_WINDOW_SECONDS = 8
 _PHASH_MAX_HAMMING_DISTANCE = 8
+
+# SPEC §6.4 fallback rule: same basename (stem, case-insensitive) + capture
+# time within 1s. exiftool's ContentIdentifier match is the SPEC's primary
+# rule but is out of scope here -- exiftool is absent in M1/M2 (SPEC §12,
+# PLAN decisions log), so only the fallback is implemented.
+_LIVE_PHOTO_TIME_WINDOW_SECONDS = 1
+_LIVE_PHOTO_VIDEO_EXTENSION = ".mov"
 
 # named tuple (not an inline literal) to sidestep a ruff 0.16.4 formatter bug
 # that strips the parens from `except (A, B, C):` when it fits on one line
@@ -177,19 +184,111 @@ def _pair_near_duplicates(progress: PhaseBProgress) -> None:
         window.append((pk, captured_at, current_hash, sha256))
 
 
+# --- Live Photo pairing (SPEC §6 item 4, §6.4 fallback) ---------------------
+
+
+def _parent_and_stem(relative_path: str) -> tuple[str, str]:
+    p = PurePosixPath(relative_path)
+    return p.parent.as_posix(), p.stem.lower()
+
+
+def live_photo_companion_paths() -> set[str]:
+    """relative_path values currently paired as some non-missing image's
+    Live Photo companion. SPEC §6 item 4: the companion is "hidden as a
+    standalone item" -- callers (queries.filtered_photos) exclude these.
+    """
+    return set(
+        Photo.objects.filter(missing=False)
+        .exclude(live_photo_video_path__isnull=True)
+        .exclude(live_photo_video_path="")
+        .values_list("live_photo_video_path", flat=True)
+    )
+
+
+def _pair_live_photos(progress: PhaseBProgress) -> None:
+    """Fallback-only Live Photo pairing (SPEC §6.4): a non-missing `.mov`
+    whose stem (case-insensitive) matches a non-missing image's stem, in
+    the *same directory*, with `captured_at` within 1s, becomes that
+    image's companion.
+
+    Deliberate tightening of the SPEC fallback: pairing is restricted to
+    photos and videos sharing a parent directory. A Live Photo export always
+    lands its `.mov` right next to its image; matching across directories
+    would risk false pairs from unrelated same-named/same-second files
+    elsewhere in the working folder.
+
+    Self-heals first: if an image's recorded companion path no longer
+    resolves to a non-missing Photo row (moved/renamed outside Culler),
+    clear it so it becomes eligible for re-pairing below.
+    """
+    try:
+        paired_images = list(
+            Photo.objects.filter(media_type=Photo.MEDIA_IMAGE, missing=False)
+            .exclude(live_photo_video_path__isnull=True)
+            .exclude(live_photo_video_path="")
+            .values_list("pk", "live_photo_video_path")
+        )
+    except Exception as exc:
+        progress.errors.append(f"phase B: could not list paired images: {exc}")
+        return
+
+    if paired_images:
+        candidate_paths = {path for _pk, path in paired_images}
+        existing_video_paths = set(
+            Photo.objects.filter(relative_path__in=candidate_paths, missing=False).values_list(
+                "relative_path", flat=True
+            )
+        )
+        dangling_pks = [pk for pk, path in paired_images if path not in existing_video_paths]
+        if dangling_pks:
+            Photo.objects.filter(pk__in=dangling_pks).update(live_photo_video_path=None)
+
+    try:
+        videos = list(
+            Photo.objects.filter(media_type=Photo.MEDIA_VIDEO, missing=False).values_list(
+                "relative_path", "captured_at"
+            )
+        )
+        images = list(
+            Photo.objects.filter(media_type=Photo.MEDIA_IMAGE, missing=False)
+            .filter(Q(live_photo_video_path__isnull=True) | Q(live_photo_video_path=""))
+            .values_list("pk", "relative_path", "captured_at")
+        )
+    except Exception as exc:
+        progress.errors.append(f"phase B: could not list photos for Live Photo pairing: {exc}")
+        return
+
+    video_by_key: dict[tuple[str, str], tuple[str, datetime]] = {}
+    for rel_path, captured_at in videos:
+        if PurePosixPath(rel_path).suffix.lower() != _LIVE_PHOTO_VIDEO_EXTENSION:
+            continue
+        video_by_key[_parent_and_stem(rel_path)] = (rel_path, captured_at)
+
+    for pk, rel_path, captured_at in images:
+        match = video_by_key.get(_parent_and_stem(rel_path))
+        if match is None:
+            continue
+        video_path, video_captured_at = match
+        delta = abs((captured_at - video_captured_at).total_seconds())
+        if delta <= _LIVE_PHOTO_TIME_WINDOW_SECONDS:
+            Photo.objects.filter(pk=pk).update(live_photo_video_path=video_path)
+
+
 def run_phase_b(folder: Path, progress: PhaseBProgress) -> None:
     """Hash every non-missing, not-yet-hashed Photo, pHash their previews,
-    and pair up near-duplicates within a time window. Exact-dupe groups are
-    derived by query (see `duplicate_group` / `duplicate_counts`) rather
-    than written here -- once hashes land, grouping is immediately visible
-    to readers, no further step required. Never aborts on a single-file
-    error; errors accumulate in `progress.errors`.
+    pair up near-duplicates within a time window, and pair Live Photos.
+    Exact-dupe groups are derived by query (see `duplicate_group` /
+    `duplicate_counts`) rather than written here -- once hashes land,
+    grouping is immediately visible to readers, no further step required.
+    Never aborts on a single-file error; errors accumulate in
+    `progress.errors`.
     """
     folder = Path(folder)
     try:
         _hash_pending(folder, progress)
         _phash_pending(folder, progress)
         _pair_near_duplicates(progress)
+        _pair_live_photos(progress)
     finally:
         progress.finished = True
 

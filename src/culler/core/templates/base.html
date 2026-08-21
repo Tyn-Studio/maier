@@ -23,6 +23,7 @@
         <dt>U</dt><dd>Undecide</dd>
         <dt>&larr; / &rarr;</dt><dd>Previous / next</dd>
         <dt>Space</dt><dd>Open review (grid)</dd>
+        <dt>L</dt><dd>Play video / Live Photo (review)</dd>
         <dt>Esc</dt><dd>Back to grid</dd>
         <dt>?</dt><dd>Toggle this overlay</dd>
         <dt>1</dt><dd>Dupes review: keep left</dd>
@@ -62,8 +63,31 @@
       return cells()[focusedIndex] || null;
     }
 
+    function toggleLivePhoto() {
+      var video = document.getElementById("review-live-video");
+      var img = document.getElementById("review-still");
+      if (!video || !img) return;
+      if (video.dataset.src) {
+        video.src = video.dataset.src;
+        delete video.dataset.src;
+      }
+      img.classList.toggle("hidden");
+      video.classList.toggle("hidden");
+      if (video.classList.contains("hidden")) {
+        video.pause();
+      } else {
+        video.currentTime = 0;
+        video.play();
+      }
+    }
+
     if (page === "grid" && cells().length) {
       setFocus(0);
+    }
+
+    if (page === "review") {
+      var liveBadge = document.getElementById("live-badge");
+      if (liveBadge) { liveBadge.addEventListener("click", toggleLivePhoto); }
     }
 
     document.addEventListener("keydown", function (e) {
@@ -99,6 +123,7 @@
         else if (e.key === "p" || e.key === "P") { click("#action-select"); }
         else if (e.key === "x" || e.key === "X") { click("#action-reject"); }
         else if (e.key === "u" || e.key === "U") { click("#action-undecide"); }
+        else if (e.key === "l" || e.key === "L") { toggleLivePhoto(); }
       } else if (page === "dupes") {
         if (e.key === "1") { click("#action-keep-left"); }
         else if (e.key === "2") { click("#action-keep-right"); }

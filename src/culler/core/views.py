@@ -5,11 +5,11 @@ spec these implement.
 
 from django.conf import settings
 from django.core.paginator import Paginator
-from django.http import FileResponse, HttpResponse, HttpResponseNotAllowed
+from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from . import phaseb, previews, queries
+from . import phaseb, previews, queries, streaming
 from .models import DuplicatePair, Photo
 
 _DUPE_ACTIONS = {"keep_left", "keep_right", "keep_both", "defer"}
@@ -34,6 +34,23 @@ def preview(request, pk):
     return response
 
 
+def stream(request, pk):
+    """Range-request streaming of an original video file (SPEC §10). `pk`
+    is any Photo row; `?companion=1` serves its paired Live Photo `.mov`
+    instead of its own file (the companion has its own, hidden, Photo row
+    with its own pk -- but the review template only knows the image's pk,
+    so this is simplest for callers: one URL, one query param).
+    """
+    photo = get_object_or_404(Photo, pk=pk)
+    if request.GET.get("companion") == "1":
+        if not photo.live_photo_video_path:
+            raise Http404("photo has no Live Photo companion")
+        rel_path = photo.live_photo_video_path
+    else:
+        rel_path = photo.relative_path
+    return streaming.serve_file_range(request, settings.WORKING_FOLDER / rel_path)
+
+
 def grid(request):
     filters = request.GET
     photos_qs = queries.filtered_photos(filters)
@@ -44,6 +61,7 @@ def grid(request):
     page_photos = list(page.object_list)
     for photo in page_photos:
         photo.dupe_count = dupe_counts.get(photo.sha256, 0)
+        photo.is_live = bool(photo.live_photo_video_path)
 
     context = {
         "day_groups": queries.group_by_day(page_photos),
@@ -120,6 +138,7 @@ def set_status(request, pk):
         return response
 
     photo.dupe_count = phaseb.duplicate_counts().get(photo.sha256, 0) if photo.sha256 else 0
+    photo.is_live = bool(photo.live_photo_video_path)
     return render(request, "_grid_cell.html", {"photo": photo, "querystring": qs})
 
 

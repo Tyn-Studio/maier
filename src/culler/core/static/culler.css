@@ -180,6 +180,15 @@ main {
   font-weight: 600;
 }
 
+.badge-video,
+.badge-live {
+  top: 0.35rem;
+  left: auto;
+  right: 0.35rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .cell-actions {
   position: absolute;
   bottom: 0.35rem;
@@ -234,6 +243,7 @@ main {
 }
 
 .review-image-wrap {
+  position: relative;
   display: flex;
   justify-content: center;
   background: #000;
@@ -245,6 +255,18 @@ main {
   max-width: 100%;
   max-height: 75vh;
   display: block;
+}
+
+.review-image-wrap #live-badge {
+  position: absolute;
+  top: 0.75rem;
+  left: 0.75rem;
+  border: none;
+  cursor: pointer;
+}
+
+.hidden {
+  display: none;
 }
 
 .review-actions {

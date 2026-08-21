@@ -7,9 +7,13 @@
 
     <div class="review-image-wrap">
       {% if photo.media_type == "video" %}
-      <video controls preload="metadata" class="review-image" src="{% url 'preview' photo.pk %}"></video>
+      <video controls preload="metadata" class="review-image" src="{% url 'stream' photo.pk %}"></video>
       {% else %}
-      <img class="review-image" src="{% url 'preview' photo.pk %}" alt="">
+      <img id="review-still" class="review-image" src="{% url 'preview' photo.pk %}" alt="">
+      {% if photo.live_photo_video_path %}
+      <video id="review-live-video" class="review-image hidden" muted loop preload="none" data-src="{% url 'stream' photo.pk %}?companion=1"></video>
+      <button type="button" id="live-badge" class="badge badge-live" title="Play Live Photo (L)">LIVE</button>
+      {% endif %}
       {% endif %}
     </div>
 

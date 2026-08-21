@@ -225,6 +225,37 @@ def test_live_photo_companion_collision_gets_own_suffix(tmp_path):
 
 
 @pytest.mark.django_db
+def test_live_photo_companion_row_moves_with_its_file(tmp_path):
+    # The .mov has its own Photo row (scan indexes it standalone). Culling
+    # the image must update that row too, or the companion transiently
+    # reappears in the grid with a stale path until the next scan.
+    _touch(tmp_path, "apple-luis/IMG_001.jpg")
+    _touch(tmp_path, "apple-luis/IMG_001.mov")
+    photo = _make_photo(
+        "apple-luis/IMG_001.jpg",
+        provenance="apple-luis",
+        live_photo_video_path="apple-luis/IMG_001.mov",
+    )
+    companion_row = _make_photo(
+        "apple-luis/IMG_001.mov",
+        provenance="apple-luis",
+        media_type=Photo.MEDIA_VIDEO,
+    )
+
+    apply_status(tmp_path, photo, "selected")
+
+    companion_row.refresh_from_db()
+    assert companion_row.relative_path == "selected/apple-luis/IMG_001.mov"
+    assert companion_row.status == "selected"
+    assert companion_row.provenance == "apple-luis"
+
+    apply_status(tmp_path, photo, "optional")
+    companion_row.refresh_from_db()
+    assert companion_row.relative_path == "apple-luis/IMG_001.mov"
+    assert companion_row.status == "optional"
+
+
+@pytest.mark.django_db
 def test_live_photo_companion_missing_on_disk_does_not_crash(tmp_path):
     _touch(tmp_path, "apple-luis/IMG_001.jpg")
     photo = _make_photo(
