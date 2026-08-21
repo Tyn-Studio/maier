@@ -1,0 +1,46 @@
+[project]
+name = "culler"
+version = "0.1.0"
+description = "Local-first, folder-centric photo culling app."
+requires-python = ">=3.14"
+dependencies = [
+    "django~=6.0",
+    "waitress",
+    "pillow",
+    "pillow-heif",
+    "imagehash",
+    "platformdirs",
+    "whitenoise",
+]
+
+[project.scripts]
+culler = "culler.cli:main"
+
+[dependency-groups]
+dev = [
+    "pytest",
+    "pytest-django",
+    "ruff",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/culler"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+extend-exclude = ["**/migrations/*.py", "*.md"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B"]
+
+[tool.pytest.ini_options]
+DJANGO_SETTINGS_MODULE = "culler.settings"
+python_files = ["test_*.py"]
+testpaths = ["tests"]
+pythonpath = ["tests"]
+addopts = "-p _bootstrap"

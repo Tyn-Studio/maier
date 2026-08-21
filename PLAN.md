@@ -5,7 +5,7 @@ Process per task: lead writes brief → dev agent implements + tests → lead re
 
 ## M1 — Core loop
 
-- [ ] **T1 Skeleton** — `pyproject.toml` (uv, src layout, deps: django~=6.0, waitress, pillow, pillow-heif, imagehash, platformdirs, htmx vendored as static file; dev: pytest, pytest-django, ruff), `src/culler/{settings,urls,cli}.py`, `core` app with models + initial migration, folder bootstrap (`.culler/` dir, WAL, auto-migrate), waitress serve + `/healthz`, base template + `culler.css` shell, pytest config. CLI: `culler open PATH [--browser] [--port N]`, `culler status PATH`.
+- [x] **T1 Skeleton** — `pyproject.toml` (uv, src layout, deps: django~=6.0, waitress, pillow, pillow-heif, imagehash, platformdirs, htmx vendored as static file; dev: pytest, pytest-django, ruff), `src/culler/{settings,urls,cli}.py`, `core` app with models + initial migration, folder bootstrap (`.culler/` dir, WAL, auto-migrate), waitress serve + `/healthz`, base template + `culler.css` shell, pytest config. CLI: `culler open PATH [--browser] [--port N]`, `culler status PATH`.
 - [ ] **T2 Move engine** — `core/moves.py` per interface below + unit tests (mirrored substructure, unflag restore, collision suffix, Live Photo companion param, DB row update).
 - [ ] **T3 Indexing Phase A** — `core/scan.py` + `core/metadata.py`: tree walk (skip `.culler/`), extension filter, status-from-location, provenance, (path,size,mtime) diff, capture-date fallback chain (Pillow EXIF → filename → mtime; exiftool used when detected on PATH), `missing` marking, simple move reconciliation (size+mtime match), progress state object polled by UI, background-thread runner. Unit tests with generated fixtures.
 - [ ] **T4 Previews** — `core/previews.py`: content-keyed cache under `.culler/previews/`, on-demand generation (2048px, q82, EXIF orientation), HEIC via pillow-heif, placeholder for RAW/videos in M1. View `preview/<photo_id>` with far-future cache headers.
@@ -70,3 +70,4 @@ def preview_path(folder: Path, photo: Photo) -> Path: ...          # generates i
 ## Decisions log
 
 - 2026-08-21: repo created; commits authored by Luis (global git identity); Python pinned 3.14 via uv; exiftool absent on dev machine → M1 relies on Pillow path (per SPEC §12).
+- 2026-08-21: T1 reviewed & accepted. Deviation kept: `whitenoise` dep added (serves app static dirs directly via `WHITENOISE_USE_FINDERS`, no collectstatic for users). `*.md` excluded from ruff (0.16 formats fenced code blocks in markdown, mangled PLAN.md's interface sketch). Tests bootstrap `CULLER_FOLDER` via `-p _bootstrap` plugin since settings read the env var at import time.
