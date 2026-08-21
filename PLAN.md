@@ -10,7 +10,7 @@ Process per task: lead writes brief → dev agent implements + tests → lead re
 - [x] **T3 Indexing Phase A** — `core/scan.py` + `core/metadata.py`: tree walk (skip `.culler/`), extension filter, status-from-location, provenance, (path,size,mtime) diff, capture-date fallback chain (Pillow EXIF → filename → mtime; exiftool used when detected on PATH), `missing` marking, simple move reconciliation (size+mtime match), progress state object polled by UI, background-thread runner. Unit tests with generated fixtures.
 - [x] **T4 Previews** — `core/previews.py`: content-keyed cache under `.culler/previews/`, on-demand generation (2048px, q82, EXIF orientation), HEIC via pillow-heif, placeholder for RAW/videos in M1. View `preview/<photo_id>` with far-future cache headers.
 - [x] **T5 Web UI** — urls/views/templates/static: timeline grid (day headers, infinite scroll via htmx sentinel, filter bar: status/provenance/date-range, status badges), review view (large preview, filmstrip ±10, metadata sidebar, auto-advance), status endpoints calling `moves.apply_status`, inline keyboard `<script>` (P/X/U/arrows/Space/Esc/I/?), dark theme CSS.
-- [ ] **T6 Integration** — fixture-folder builder (tiny JPEGs with EXIF dates via Pillow), end-to-end tests: index → DB matches filesystem; cull via views → files physically moved; re-open → state persists; `.culler/` deleted → state rebuilt from locations.
+- [x] **T6 Integration** — fixture-folder builder (tiny JPEGs with EXIF dates via Pillow), end-to-end tests: index → DB matches filesystem; cull via views → files physically moved; re-open → state persists; `.culler/` deleted → state rebuilt from locations.
 
 ## M2 — Full indexing
 
