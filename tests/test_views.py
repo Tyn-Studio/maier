@@ -7,7 +7,7 @@ from django.urls import reverse
 
 from culler.core import scan as scan_module
 from culler.core import views as views_module
-from culler.core.models import Photo
+from culler.core.models import DuplicatePair, Photo
 from culler.core.phaseb import PhaseBProgress, run_phase_b
 from culler.core.scan import ScanProgress, scan
 from fixtures import build_fixture_folder
@@ -288,6 +288,230 @@ def test_set_status_select_representative_auto_rejects_dupe_copy(client):
     other.refresh_from_db()
     assert other.status == Photo.STATUS_REJECTED
     assert (settings.WORKING_FOLDER / f"rejected/{unique}/other.jpg").exists()
+
+
+# --- dupes review (T8) -----------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_dupes_renders_pair_with_metadata_and_count(client):
+    unique = "t_t8_dupes_render"
+    left = _db_photo(
+        f"{unique}/left.jpg",
+        provenance=unique,
+        file_size=111,
+        captured_at=datetime(2025, 6, 14, 10, 0, tzinfo=UTC),
+    )
+    right = _db_photo(
+        f"{unique}/right.jpg",
+        provenance=unique,
+        file_size=222,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=5)
+
+    response = client.get(reverse("dupes"))
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert f"{unique}/left.jpg" in body
+    assert f"{unique}/right.jpg" in body
+    assert "111 bytes" in body
+    assert "222 bytes" in body
+    assert "Hamming distance: 5" in body
+    assert "1 unresolved" in body
+
+
+@pytest.mark.django_db
+def test_dupes_empty_state_when_no_unresolved_pairs(client):
+    response = client.get(reverse("dupes"))
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "No unresolved duplicates" in body
+    assert "0 unresolved" in body
+
+
+@pytest.mark.django_db
+def test_resolve_pair_keep_left_moves_files_and_resolves(client):
+    unique = "t_t8_resolve_keep_left"
+    _touch(f"{unique}/left.jpg")
+    _touch(f"{unique}/right.jpg")
+    left = _db_photo(f"{unique}/left.jpg", provenance=unique)
+    right = _db_photo(
+        f"{unique}/right.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    pair = DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=4)
+
+    response = client.post(reverse("resolve-pair", args=[pair.pk]), {"action": "keep_left"})
+
+    assert response.status_code == 200
+    assert response["HX-Redirect"] == f"{reverse('dupes')}?after={pair.pk}"
+
+    pair.refresh_from_db()
+    assert pair.resolved is True
+
+    assert (settings.WORKING_FOLDER / f"selected/{unique}/left.jpg").exists()
+    assert (settings.WORKING_FOLDER / f"rejected/{unique}/right.jpg").exists()
+    assert not (settings.WORKING_FOLDER / f"{unique}/left.jpg").exists()
+    assert not (settings.WORKING_FOLDER / f"{unique}/right.jpg").exists()
+
+
+@pytest.mark.django_db
+def test_resolve_pair_keep_right_moves_files_mirrored(client):
+    unique = "t_t8_resolve_keep_right"
+    _touch(f"{unique}/left.jpg")
+    _touch(f"{unique}/right.jpg")
+    left = _db_photo(f"{unique}/left.jpg", provenance=unique)
+    right = _db_photo(
+        f"{unique}/right.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    pair = DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=4)
+
+    response = client.post(reverse("resolve-pair", args=[pair.pk]), {"action": "keep_right"})
+
+    assert response.status_code == 200
+    pair.refresh_from_db()
+    assert pair.resolved is True
+    assert (settings.WORKING_FOLDER / f"selected/{unique}/right.jpg").exists()
+    assert (settings.WORKING_FOLDER / f"rejected/{unique}/left.jpg").exists()
+
+
+@pytest.mark.django_db
+def test_resolve_pair_keep_both_resolves_without_moving_files(client):
+    unique = "t_t8_resolve_keep_both"
+    _touch(f"{unique}/left.jpg")
+    _touch(f"{unique}/right.jpg")
+    left = _db_photo(f"{unique}/left.jpg", provenance=unique)
+    right = _db_photo(
+        f"{unique}/right.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    pair = DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=4)
+
+    response = client.post(reverse("resolve-pair", args=[pair.pk]), {"action": "keep_both"})
+
+    assert response.status_code == 200
+    pair.refresh_from_db()
+    assert pair.resolved is True
+
+    left.refresh_from_db()
+    right.refresh_from_db()
+    assert left.status == Photo.STATUS_OPTIONAL
+    assert right.status == Photo.STATUS_OPTIONAL
+    assert (settings.WORKING_FOLDER / f"{unique}/left.jpg").exists()
+    assert (settings.WORKING_FOLDER / f"{unique}/right.jpg").exists()
+
+
+@pytest.mark.django_db
+def test_resolve_pair_defer_does_not_resolve_and_navigates_to_next(client):
+    unique = "t_t8_resolve_defer"
+    photo_1a = _db_photo(f"{unique}/1a.jpg", provenance=unique)
+    photo_1b = _db_photo(
+        f"{unique}/1b.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    photo_2a = _db_photo(
+        f"{unique}/2a.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 11, 0, tzinfo=UTC),
+    )
+    photo_2b = _db_photo(
+        f"{unique}/2b.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 11, 0, 3, tzinfo=UTC),
+    )
+    pair1 = DuplicatePair.objects.create(photo_a=photo_1a, photo_b=photo_1b, hamming_distance=3)
+    DuplicatePair.objects.create(photo_a=photo_2a, photo_b=photo_2b, hamming_distance=3)
+
+    response = client.post(reverse("resolve-pair", args=[pair1.pk]), {"action": "defer"})
+
+    assert response.status_code == 200
+    assert response["HX-Redirect"] == f"{reverse('dupes')}?after={pair1.pk}"
+
+    pair1.refresh_from_db()
+    assert pair1.resolved is False
+
+    # navigating to the redirect target shows the other pair, not the
+    # deferred one (which is pushed to the back of the pk-ordered queue).
+    next_response = client.get(response["HX-Redirect"])
+    body = next_response.content.decode()
+    assert f"{unique}/2a.jpg" in body
+    assert f"{unique}/1a.jpg" not in body
+
+
+@pytest.mark.django_db
+def test_resolve_pair_unknown_pk_returns_404(client):
+    response = client.post(reverse("resolve-pair", args=[999999]), {"action": "keep_left"})
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_resolve_pair_unknown_action_returns_400(client):
+    unique = "t_t8_resolve_bad_action"
+    left = _db_photo(f"{unique}/left.jpg", provenance=unique)
+    right = _db_photo(
+        f"{unique}/right.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    pair = DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=4)
+
+    response = client.post(reverse("resolve-pair", args=[pair.pk]), {"action": "bogus"})
+
+    assert response.status_code == 400
+    pair.refresh_from_db()
+    assert pair.resolved is False
+
+
+@pytest.mark.django_db
+def test_resolve_pair_vanished_file_returns_409(client):
+    unique = "t_t8_resolve_missing_file"
+    left = _db_photo(f"{unique}/left.jpg", provenance=unique)  # never touched on disk
+    right = _db_photo(
+        f"{unique}/right.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    pair = DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=4)
+
+    response = client.post(reverse("resolve-pair", args=[pair.pk]), {"action": "keep_left"})
+
+    assert response.status_code == 409
+    pair.refresh_from_db()
+    assert pair.resolved is False
+
+
+@pytest.mark.django_db
+def test_grid_shows_dupes_badge_when_unresolved_pairs_exist(client):
+    unique = "t_t8_grid_badge"
+    left = _db_photo(f"{unique}/left.jpg", provenance=unique)
+    right = _db_photo(
+        f"{unique}/right.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=4)
+
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert "Dupes (1)" in body
+    assert reverse("dupes") in body
+
+
+@pytest.mark.django_db
+def test_grid_hides_dupes_badge_when_no_unresolved_pairs(client):
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert "dupes-badge" not in body
 
 
 # --- scan-status / rescan --------------------------------------------------

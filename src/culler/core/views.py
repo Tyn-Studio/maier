@@ -10,7 +10,9 @@ from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
 from . import phaseb, previews, queries
-from .models import Photo
+from .models import DuplicatePair, Photo
+
+_DUPE_ACTIONS = {"keep_left", "keep_right", "keep_both", "defer"}
 
 PAGE_SIZE = 200
 NEIGHBOUR_WINDOW = 10
@@ -53,6 +55,7 @@ def grid(request):
         "filter_provenance": filters.get("provenance", ""),
         "filter_from": filters.get("from", ""),
         "filter_to": filters.get("to", ""),
+        "unresolved_pair_count": phaseb.unresolved_pair_count(),
     }
     template = "_grid_items.html" if request.headers.get("HX-Request") else "grid.html"
     return render(request, template, context)
@@ -154,3 +157,52 @@ def rescan(request):
 
     progress = start_background_scan(settings.WORKING_FOLDER)
     return render(request, "_scan_banner.html", {"progress": progress})
+
+
+def dupes(request):
+    """Near-dupe review screen (SPEC §8): shows one unresolved pair at a
+    time. `?after=<pk>` (set by `resolve_pair`'s redirect) advances the
+    pk-ordered queue past a given pair -- used for both post-action
+    navigation and `defer` (which pushes a pair to the back without
+    resolving it).
+    """
+    after = request.GET.get("after")
+    after_pk = int(after) if after and after.isdigit() else None
+    pair = phaseb.next_unresolved_pair(after_pk=after_pk)
+    context = {"pair": pair, "unresolved_count": phaseb.unresolved_pair_count()}
+    return render(request, "dupes.html", context)
+
+
+def resolve_pair(request, pair_id):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    pair = get_object_or_404(DuplicatePair, pk=pair_id)
+    action = request.POST.get("action", "")
+    if action not in _DUPE_ACTIONS:
+        return HttpResponse("unknown action", status=400)
+
+    folder = settings.WORKING_FOLDER
+    try:
+        if action == "keep_left":
+            phaseb.apply_status_to_group(folder, pair.photo_a, Photo.STATUS_SELECTED)
+            phaseb.apply_status_to_group(folder, pair.photo_b, Photo.STATUS_REJECTED)
+            pair.resolved = True
+            pair.save(update_fields=["resolved"])
+        elif action == "keep_right":
+            phaseb.apply_status_to_group(folder, pair.photo_b, Photo.STATUS_SELECTED)
+            phaseb.apply_status_to_group(folder, pair.photo_a, Photo.STATUS_REJECTED)
+            pair.resolved = True
+            pair.save(update_fields=["resolved"])
+        elif action == "keep_both":
+            pair.resolved = True
+            pair.save(update_fields=["resolved"])
+        # "defer": no DB change -- the redirect below simply requests the
+        # next pair after this one, wrapping around, without resolving it.
+    except FileNotFoundError:
+        return HttpResponse("file moved or deleted outside Culler", status=409)
+
+    url = f"{reverse('dupes')}?after={pair.pk}"
+    response = HttpResponse(status=200)
+    response["HX-Redirect"] = url
+    return response

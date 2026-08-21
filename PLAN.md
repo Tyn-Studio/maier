@@ -15,7 +15,7 @@ Process per task: lead writes brief → dev agent implements + tests → lead re
 ## M2 — Full indexing
 
 - [x] **T7** SHA-256 background queue + exact-dupe grouping (×N badge, group cull, auto-reject policy)
-- [ ] **T8** pHash + `DuplicatePair` + side-by-side dupes review screen
+- [x] **T8** pHash + `DuplicatePair` + side-by-side dupes review screen
 - [ ] **T9** Live Photo pairing + video support (range-request streaming view, `<video>` cards)
 - [ ] **T10** RAW embedded previews (exiftool), hash-confirmed move reconciliation, missing-file UX
 
@@ -75,3 +75,4 @@ def preview_path(folder: Path, photo: Photo) -> Path: ...          # generates i
 - 2026-08-21: T5 reviewed & accepted with two lead fixes: filter bar `hx-include` scoped to its own inputs (was `[name]`, dragging every cell's hidden input into filter requests), and CSRF enabled (`CsrfViewMiddleware` + `hx-headers` on `<body>`) since set-status moves files on POST — verified 403 without token. HX-Request → partial applies to all htmx grid requests, not just page>1 (filter swaps need it). Video cards show the JPEG placeholder until T9 streaming.
 - 2026-08-21: **M1 accepted.** T6 green (84 tests). Acceptance run on a scratch fixture: boot → index → review → P/X culling over HTTP → mirrored moves verified on disk → unflag restored originals; CSRF-less POST rejected 403. Browser-extension UI pass not possible this session (extension disconnected) — keyboard JS verified by review; revisit in M3 polish. M2 runs sequentially (T7→T10): every task after T7 touches views/urls/templates, so parallel agents would collide.
 - 2026-08-21: T7 reviewed & accepted. Exact-dupe groups derived by query, no new model. Group cull auto-rejects redundant copies on ANY status action incl. undecide (copies never linger undecided; unflag never auto-restores them) — §17.3 policy kept as specced, revisit with real data. Phase B kicks off automatically at the end of every Phase A scan.
+- 2026-08-21: T8 reviewed & accepted. pHashing previews has the intended side effect of pre-generating all previews in the background (SPEC §6 B1 sweep). Defer = pk-ordered skip with wraparound, no DB write. Known gap: keep-left/right does two sequential moves, not atomic (retry-safe). Dupes zoom (SPEC "zoomable") deferred to T13 polish.

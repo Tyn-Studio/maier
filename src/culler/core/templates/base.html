@@ -25,6 +25,10 @@
         <dt>Space</dt><dd>Open review (grid)</dd>
         <dt>Esc</dt><dd>Back to grid</dd>
         <dt>?</dt><dd>Toggle this overlay</dd>
+        <dt>1</dt><dd>Dupes review: keep left</dd>
+        <dt>2</dt><dd>Dupes review: keep right</dd>
+        <dt>B</dt><dd>Dupes review: keep both</dd>
+        <dt>D</dt><dd>Dupes review: defer</dd>
       </dl>
       <p class="hint">Press ? or Esc to close.</p>
     </div>
@@ -95,6 +99,11 @@
         else if (e.key === "p" || e.key === "P") { click("#action-select"); }
         else if (e.key === "x" || e.key === "X") { click("#action-reject"); }
         else if (e.key === "u" || e.key === "U") { click("#action-undecide"); }
+      } else if (page === "dupes") {
+        if (e.key === "1") { click("#action-keep-left"); }
+        else if (e.key === "2") { click("#action-keep-right"); }
+        else if (e.key === "b" || e.key === "B") { click("#action-keep-both"); }
+        else if (e.key === "d" || e.key === "D") { click("#action-defer"); }
       }
     });
   })();

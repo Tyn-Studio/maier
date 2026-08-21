@@ -1,0 +1,57 @@
+{% extends "base.html" %}
+{% block page_name %}dupes{% endblock %}
+{% block content %}
+<div class="dupes-header">
+  <a class="back-link" href="{% url 'grid' %}">&larr; Back to grid</a>
+  <span class="dupes-count">{{ unresolved_count }} unresolved</span>
+</div>
+
+{% if pair %}
+<div class="dupes-pair" data-pair-id="{{ pair.pk }}">
+  <div class="dupes-side">
+    <h3>Left</h3>
+    <img class="dupes-image" src="{% url 'preview' pair.photo_a.pk %}" alt="">
+    <dl>
+      <dt>Captured</dt><dd>{{ pair.photo_a.captured_at }}</dd>
+      <dt>Path</dt><dd>{{ pair.photo_a.relative_path }}</dd>
+      <dt>Size</dt><dd>{{ pair.photo_a.file_size }} bytes</dd>
+      <dt>Provenance</dt><dd>{{ pair.photo_a.provenance|default:"(root)" }}</dd>
+    </dl>
+    <button type="button" id="action-keep-left"
+            hx-post="{% url 'resolve-pair' pair.pk %}" hx-vals='{"action": "keep_left"}' hx-swap="none">
+      Keep left (1)
+    </button>
+  </div>
+
+  <div class="dupes-meta">
+    <p class="dupes-distance">Hamming distance: {{ pair.hamming_distance }}</p>
+    <button type="button" id="action-keep-both"
+            hx-post="{% url 'resolve-pair' pair.pk %}" hx-vals='{"action": "keep_both"}' hx-swap="none">
+      Keep both (B)
+    </button>
+    <button type="button" id="action-defer"
+            hx-post="{% url 'resolve-pair' pair.pk %}" hx-vals='{"action": "defer"}' hx-swap="none">
+      Defer (D)
+    </button>
+  </div>
+
+  <div class="dupes-side">
+    <h3>Right</h3>
+    <img class="dupes-image" src="{% url 'preview' pair.photo_b.pk %}" alt="">
+    <dl>
+      <dt>Captured</dt><dd>{{ pair.photo_b.captured_at }}</dd>
+      <dt>Path</dt><dd>{{ pair.photo_b.relative_path }}</dd>
+      <dt>Size</dt><dd>{{ pair.photo_b.file_size }} bytes</dd>
+      <dt>Provenance</dt><dd>{{ pair.photo_b.provenance|default:"(root)" }}</dd>
+    </dl>
+    <button type="button" id="action-keep-right"
+            hx-post="{% url 'resolve-pair' pair.pk %}" hx-vals='{"action": "keep_right"}' hx-swap="none">
+      Keep right (2)
+    </button>
+  </div>
+</div>
+<p class="hint">Keys: 1 keep left &middot; 2 keep right &middot; B keep both &middot; D defer</p>
+{% else %}
+<p class="empty-state">No unresolved duplicates.</p>
+{% endif %}
+{% endblock %}

@@ -11,4 +11,6 @@ urlpatterns = [
     path("scan-status", views.scan_status, name="scan-status"),
     path("rescan", views.rescan, name="rescan"),
     path("preview/<int:pk>", views.preview, name="preview"),
+    path("dupes", views.dupes, name="dupes"),
+    path("dupes/<int:pair_id>/resolve", views.resolve_pair, name="resolve-pair"),
 ]

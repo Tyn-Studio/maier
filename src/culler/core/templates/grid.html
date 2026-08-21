@@ -30,6 +30,9 @@
   <label>From <input type="date" name="from" value="{{ filter_from }}"></label>
   <label>To <input type="date" name="to" value="{{ filter_to }}"></label>
   <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-banner" hx-swap="innerHTML">Rescan</button>
+  {% if unresolved_pair_count %}
+  <a class="dupes-badge" href="{% url 'dupes' %}">Dupes ({{ unresolved_pair_count }})</a>
+  {% endif %}
 </div>
 
 <div id="grid-content">

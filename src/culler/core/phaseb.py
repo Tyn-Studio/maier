@@ -1,8 +1,9 @@
-"""Phase B item 2 (SPEC §6, §8, §17.3): background SHA-256 hashing queue and
-exact-duplicate grouping. Mirrors scan.py's background-thread pattern:
-work is derived from DB state (`sha256__isnull=True`), so a rerun after an
-interruption simply picks up where it left off -- no separate "resume"
-bookkeeping needed.
+"""Phase B items 2 and 3 (SPEC §6, §8, §17.3): background SHA-256 hashing
+queue, exact-duplicate grouping, pHash computation, and time-windowed
+near-dupe pairing. Mirrors scan.py's background-thread pattern: work is
+derived from DB state (`sha256__isnull=True` / `phash__isnull=True`), so a
+rerun after an interruption simply picks up where it left off -- no
+separate "resume" bookkeeping needed.
 
 Exact-dupe groups are never materialized as a model/migration: they're
 derived on read via `values("sha256").annotate(...)` queries, kept cheap
@@ -14,15 +15,28 @@ from __future__ import annotations
 import hashlib
 import threading
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 
+import imagehash
 from django.db import connection
 from django.db.models import Count, QuerySet
+from PIL import Image, UnidentifiedImageError
 
 from . import moves
-from .models import Photo
+from . import previews as previews_module
+from .models import DuplicatePair, Photo
 
 _HASH_CHUNK = 1024 * 1024  # 1 MiB, per brief
+
+# SPEC §6.3: near-dupe scan is time-windowed (±8s) and hamming-thresholded.
+_PHASH_TIME_WINDOW_SECONDS = 8
+_PHASH_MAX_HAMMING_DISTANCE = 8
+
+# named tuple (not an inline literal) to sidestep a ruff 0.16.4 formatter bug
+# that strips the parens from `except (A, B, C):` when it fits on one line
+# (see previews.py).
+_PHASH_ERRORS = (OSError, UnidentifiedImageError, ValueError)
 
 
 @dataclass
@@ -74,8 +88,98 @@ def _hash_pending(folder: Path, progress: PhaseBProgress) -> None:
             progress.done += 1
 
 
+def _phash_pending(folder: Path, progress: PhaseBProgress) -> None:
+    """pHash the preview of every non-missing, hashed, not-yet-pHashed image
+    Photo (SPEC §6 item 3: "pHash of the preview"). Runs as a second pass
+    with its own additions to `progress.total` -- keeps the single progress
+    object meaningful across both steps without a separate counter.
+
+    Photos whose preview resolves to the shared RAW/video/corrupt placeholder
+    are skipped (still counted in total/done): hashing the identical
+    placeholder would pair every such photo with every other one.
+    """
+    try:
+        pending = list(
+            Photo.objects.filter(
+                phash__isnull=True,
+                missing=False,
+                media_type=Photo.MEDIA_IMAGE,
+                sha256__isnull=False,
+            ).values_list("pk", "relative_path")
+        )
+    except Exception as exc:
+        progress.errors.append(f"phase B: could not list photos pending pHash: {exc}")
+        return
+
+    progress.total += len(pending)
+
+    for pk, rel_path in pending:
+        try:
+            photo = Photo.objects.get(pk=pk)
+            preview = previews_module.preview_path(folder, photo)
+            if preview.name == previews_module._PLACEHOLDER_NAME:
+                continue
+            with Image.open(preview) as img:
+                digest = imagehash.phash(img)
+            Photo.objects.filter(pk=pk).update(phash=str(digest))
+        except Photo.DoesNotExist:
+            continue
+        except _PHASH_ERRORS as exc:
+            progress.errors.append(f"{rel_path}: {exc}")
+        finally:
+            progress.done += 1
+
+
+def _pair_near_duplicates(progress: PhaseBProgress) -> None:
+    """Time-windowed near-dupe scan (SPEC §6.3): O(burst), not O(folder).
+    Photos are sorted by `captured_at`; a sliding window holds only the
+    already-seen photos within the trailing 8s, so each new photo is
+    compared against a small burst rather than the whole collection.
+    Idempotent: `get_or_create` on the canonical (lower pk, higher pk) pair.
+    """
+    try:
+        rows = list(
+            Photo.objects.filter(phash__isnull=False, missing=False)
+            .order_by("captured_at", "pk")
+            .values_list("pk", "captured_at", "phash", "sha256")
+        )
+    except Exception as exc:
+        progress.errors.append(f"phase B: could not list photos for near-dupe scan: {exc}")
+        return
+
+    window: list[tuple[int, datetime, imagehash.ImageHash, str | None]] = []
+
+    for pk, captured_at, phash_hex, sha256 in rows:
+        try:
+            current_hash = imagehash.hex_to_hash(phash_hex)
+        except ValueError as exc:
+            progress.errors.append(f"pk={pk}: invalid phash {phash_hex!r}: {exc}")
+            continue
+
+        while window and (captured_at - window[0][1]).total_seconds() > _PHASH_TIME_WINDOW_SECONDS:
+            window.pop(0)
+
+        for other_pk, _other_captured_at, other_hash, other_sha256 in window:
+            if sha256 and other_sha256 and sha256 == other_sha256:
+                continue  # exact dupes are T7's domain, not a near-dupe pair
+            distance = current_hash - other_hash
+            if distance <= _PHASH_MAX_HAMMING_DISTANCE:
+                lo, hi = sorted((pk, other_pk))
+                try:
+                    DuplicatePair.objects.get_or_create(
+                        photo_a_id=lo,
+                        photo_b_id=hi,
+                        defaults={"hamming_distance": distance},
+                    )
+                except Exception as exc:
+                    progress.errors.append(f"pk={lo}/{hi}: could not record duplicate pair: {exc}")
+
+        window.append((pk, captured_at, current_hash, sha256))
+
+
 def run_phase_b(folder: Path, progress: PhaseBProgress) -> None:
-    """Hash every non-missing, not-yet-hashed Photo. Exact-dupe groups are
+    """Hash every non-missing, not-yet-hashed Photo, pHash their previews,
+    and pair up near-duplicates within a time window. Exact-dupe groups are
     derived by query (see `duplicate_group` / `duplicate_counts`) rather
     than written here -- once hashes land, grouping is immediately visible
     to readers, no further step required. Never aborts on a single-file
@@ -84,6 +188,8 @@ def run_phase_b(folder: Path, progress: PhaseBProgress) -> None:
     folder = Path(folder)
     try:
         _hash_pending(folder, progress)
+        _phash_pending(folder, progress)
+        _pair_near_duplicates(progress)
     finally:
         progress.finished = True
 
@@ -198,3 +304,32 @@ def apply_status_to_group(folder: Path, photo: Photo, new_status: str) -> Photo:
             pass
 
     return updated
+
+
+# --- near-dupe review (SPEC §8) ---------------------------------------------
+
+
+def _unresolved_pairs_qs() -> QuerySet[DuplicatePair]:
+    return DuplicatePair.objects.filter(
+        resolved=False, photo_a__missing=False, photo_b__missing=False
+    ).order_by("pk")
+
+
+def unresolved_pair_count() -> int:
+    return _unresolved_pairs_qs().count()
+
+
+def next_unresolved_pair(after_pk: int | None = None) -> DuplicatePair | None:
+    """First unresolved pair (both photos non-missing), ordered by pk --
+    the review queue. With `after_pk`, returns the first unresolved pair
+    with a higher pk, wrapping to the very first unresolved pair if none
+    remain -- used both for "next pair after resolving this one" and for
+    `defer` (which pushes the current pair to the back of the queue without
+    resolving it by simply not being returned again until we wrap around).
+    """
+    qs = _unresolved_pairs_qs().select_related("photo_a", "photo_b")
+    if after_pk is not None:
+        nxt = qs.filter(pk__gt=after_pk).first()
+        if nxt is not None:
+            return nxt
+    return qs.first()
