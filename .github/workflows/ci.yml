@@ -1,0 +1,44 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+env:
+  # pywebview can't create a real window in CI; culler falls back to
+  # browser-mode serving whenever this is set (see cli.py).
+  CULLER_FORCE_NO_WINDOW: "1"
+
+jobs:
+  test:
+    # windows-latest is deferred: pywebview's Windows backend (WebView2) and
+    # pyobjc (macOS) have platform-specific extra deps we haven't wired into
+    # `uv sync` yet. TODO(windows-ci): add windows-latest to this matrix
+    # once that's sorted -- see release.yml's PyInstaller job, which already
+    # targets Windows for the bundle build.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint (ruff check)
+        run: uv run ruff check
+
+      - name: Format check (ruff format)
+        run: uv run ruff format --check
+
+      - name: Test
+        run: uv run pytest

@@ -1,0 +1,168 @@
+name: Release
+
+# Triggered by pushing a tag like `v0.1.0`. Nothing in this workflow runs on
+# normal pushes/PRs (that's ci.yml) -- it is inert until a human tags a
+# release. Every publish step is currently disabled (`if: false`) pending
+# the name (SPEC §17.1) and license (SPEC §17.2) decisions; this workflow
+# will need a real run against a tag to shake out the PyInstaller/signing
+# specifics before it's trusted for an actual release.
+
+on:
+  push:
+    tags:
+      - "v*"
+
+env:
+  CULLER_FORCE_NO_WINDOW: "1"
+
+jobs:
+  test:
+    # Ubuntu only here -- the full OS matrix is already covered by ci.yml on
+    # every push to main; re-running it per-tag would be redundant. This is
+    # a final gate before anything gets built/published.
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies
+        run: uv sync
+
+      - name: Lint
+        run: uv run ruff check
+
+      - name: Format check
+        run: uv run ruff format --check
+
+      - name: Test
+        run: uv run pytest
+
+  build-pypi:
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Build wheel + sdist
+        run: uv build
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          # TODO(name): rename this artifact (and the dist filenames inside
+          # it) once the PyPI project name changes from "culler".
+          name: culler-pypi-dist
+          path: dist/
+
+      - name: Publish to PyPI
+        # TODO(name+license): enable after the PyPI project "culler" (or its
+        # renamed successor) exists and a license is chosen. Needs either a
+        # PYPI_API_TOKEN repo secret or trusted publishing configured on the
+        # PyPI project settings (preferred -- no secret to manage; see
+        # https://docs.pypi.org/trusted-publishers/). skip-existing avoids
+        # failing the whole workflow if this version was already published.
+        if: false # TODO(name+license): enable after PyPI project exists
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+          # password: ${{ secrets.PYPI_API_TOKEN }}   # only if not using trusted publishing
+
+  build-bundles:
+    needs: test
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [macos-14, windows-latest, ubuntu-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v4
+        with:
+          enable-cache: true
+
+      - name: Install dependencies (incl. PyInstaller)
+        run: uv sync --group build
+
+      # TODO(signing): unsigned builds for v1 (SPEC §13). Fast-follow once
+      # there are external users:
+      #   macOS:   codesign + notarytool, needs APPLE_CERTIFICATE /
+      #            APPLE_CERTIFICATE_PASSWORD / APPLE_TEAM_ID / an
+      #            app-specific password secret, wired into culler.spec's
+      #            codesign_identity/entitlements_file.
+      #   Windows: Authenticode signing, needs a WINDOWS_CERTIFICATE +
+      #            WINDOWS_CERTIFICATE_PASSWORD secret (or Azure Trusted
+      #            Signing) and a signtool step after PyInstaller runs.
+      - name: Build bundle (PyInstaller)
+        run: uv run pyinstaller packaging/culler.spec
+
+      - name: Smoke test the built bundle (macOS)
+        if: runner.os == 'macOS'
+        run: |
+          python3 scripts/smoke_test.py "dist/Culler.app/Contents/MacOS/Culler" "$RUNNER_TEMP/smoke-folder" --timeout 40
+
+      - name: Smoke test the built bundle (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          python3 scripts/smoke_test.py "dist/Culler/Culler" "$RUNNER_TEMP/smoke-folder" --timeout 40
+
+      - name: Smoke test the built bundle (Windows)
+        if: runner.os == 'Windows'
+        # Uncertain: PyInstaller's Windows one-dir layout + pywebview's
+        # WebView2 backend are best-effort here, not yet verified against a
+        # real build -- expect to iterate on this step against a real tag.
+        run: |
+          python scripts/smoke_test.py "dist\Culler\Culler.exe" "$env:RUNNER_TEMP\smoke-folder" --timeout 40
+
+      - name: Package bundle for release
+        # TODO(name): asset naming below assumes "Culler"; rename alongside
+        # the product-name decision. Windows: a zipped exe for now --
+        # SPEC §13 mentions an Inno Setup installer as an alternative,
+        # not yet built. Linux: tarball placeholder -- AppImage packaging
+        # (SPEC §13) not yet implemented.
+        shell: bash
+        run: |
+          mkdir -p out
+          case "${{ runner.os }}" in
+            macOS)
+              ditto -c -k --sequesterRsrc --keepParent dist/Culler.app out/Culler-macos.zip
+              ;;
+            Linux)
+              tar -C dist -czf out/Culler-linux.tar.gz Culler
+              ;;
+            Windows)
+              powershell -Command "Compress-Archive -Path dist/Culler -DestinationPath out/Culler-windows.zip"
+              ;;
+          esac
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: culler-bundle-${{ runner.os }}
+          path: out/
+
+  publish-release:
+    needs: build-bundles
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: culler-bundle-*
+          path: artifacts
+          merge-multiple: true
+
+      - name: Attach bundles to GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: artifacts/*
+          draft: true # human reviews + publishes; nothing goes live automatically

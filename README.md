@@ -1,25 +1,149 @@
 # Culler
 
+<!-- TODO(name): "Culler" is a working name -- "culler" is already taken on
+     PyPI, so this project will ship under a different final name. Every
+     spot below that needs to change once the name is picked is marked
+     TODO(name). -->
+
 Local-first photo culling app where **the folder structure is the state**.
 
-Point it at a folder of photos (e.g. exports from two Apple Photos accounts + Lightroom dropped in as subfolders). It shows everything in one timeline sorted by capture date; you cull with keyboard shortcuts (`P` select, `X` reject, `U` undecide). Every action is an atomic file move into `selected/` or `rejected/` inside your folder — no duplication, no export step, no lock-in. `selected/` always *is* your current selection, readable in any file browser. The app's cache (`.culler/`) is fully rebuildable; deleting it loses nothing.
+Point it at a working folder (e.g. exports from two Apple Photos accounts
+and a Lightroom catalog, dropped in as subfolders). It indexes everything
+into one timeline sorted by capture date, and you cull with keyboard
+shortcuts. Every cull action is an atomic file move — no export step, no
+duplication, no lock-in:
 
-Built with Python / Django 6 / HTMX. No JS frameworks, no build step.
+- Select (`P`) moves the file into `selected/`
+- Reject (`X`) moves it into `rejected/`
+- Undecide (`U`) moves it back to where it came from
 
-**Status: work in progress** — see [SPEC.md](SPEC.md) for the full specification and [PLAN.md](PLAN.md) for implementation progress.
+`selected/` always *is* your current selection — readable in any file
+browser, without the app. The app's own cache (`.culler/`) is fully
+rebuildable from the filesystem; deleting it loses no culling state.
+
+Built with Python / Django 6 / HTMX. No JS frameworks, no build step, no npm.
+
+## Install
+
+Requires [uv](https://docs.astral.sh/uv/) (installs Python 3.14 for you if
+you don't have it).
+
+```sh
+# TODO(name): package isn't published yet, and will publish under a
+# different name than "culler" (taken on PyPI) -- these commands are
+# aspirational until then. Use the "Development" section below for now.
+uvx culler                       # run without installing
+uv tool install culler           # install a `culler` command permanently
+pipx install culler               # or via pipx, if you prefer
+```
+
+### Double-click app (no Python required)
+
+Prebuilt, unsigned desktop bundles (macOS, Windows, Linux) will be attached
+to [GitHub Releases](../../releases) once M4 packaging ships — see
+`.github/workflows/release.yml`. Not available yet; this section is a
+placeholder for the download links.
+
+Because these builds are unsigned (SPEC §13 — signing is a fast-follow):
+
+- **macOS**: Gatekeeper will refuse a plain double-click ("Culler is
+  damaged" / "cannot be opened"). Right-click the app → **Open** → **Open**
+  in the confirmation dialog. Only needs doing once.
+- **Windows**: SmartScreen will show "Windows protected your PC". Click
+  **More info** → **Run anyway**.
+
+## Quickstart
+
+```sh
+uv run culler open ~/Photos/2025-inbox
+```
+
+Opens a native window on the given folder (falls back to your system
+browser with `--browser`, or automatically if no windowing backend is
+available). First launch on a folder runs Phase A indexing in the
+background — the grid is cullable within seconds even on large folders;
+thumbnails and duplicate detection fill in progressively.
+
+### Consolidating sources first
+
+Culler doesn't read Apple Photos `.photoslibrary` bundles or Lightroom
+catalogs directly (not a goal — see SPEC §4). Export originals from each
+source into subfolders of one working folder before opening it:
+
+```
+2025-inbox/
+  apple-luis/       <- exported from Luis's Photos library
+  apple-maria/      <- exported from Maria's Photos library
+  lightroom/        <- exported from a Lightroom catalog
+```
+
+The top-level subfolder name becomes each photo's **provenance**, filterable
+in the UI. Moves mirror this substructure: selecting `apple-luis/IMG_1.jpg`
+moves it to `selected/apple-luis/IMG_1.jpg`, so provenance and directory
+layout survive culling.
+
+## Keyboard shortcuts
+
+| Key | Action |
+|---|---|
+| `P` | Select — move to `selected/` |
+| `X` | Reject — move to `rejected/` |
+| `U` | Undecide — move back to original location |
+| `←` `→` | Previous / next photo |
+| `Space` | Open review (grid) / toggle zoom (review) |
+| `L` | Play video / Live Photo |
+| `I` | Toggle metadata sidebar |
+| `?` | Shortcut overlay |
+| `Esc` | Back to grid |
+
+Duplicates review screen:
+
+| Key | Action |
+|---|---|
+| `1` | Keep left, reject right |
+| `2` | Keep right, reject left |
+| `B` | Keep both |
+| `D` | Defer (skip for now) |
+
+Bindings mirror Lightroom so muscle memory transfers.
+
+## The `.culler/` cache
+
+Each working folder gets a `.culler/` directory: a SQLite index, generated
+previews, and logs. It's a cache, not a source of truth — the filesystem
+(file locations + contents) is. Deleting `.culler/` loses no culling
+decisions; the next open just re-derives status from where files currently
+live (root = undecided, `selected/` = selected, `rejected/` = rejected) and
+rebuilds previews/hashes in the background. Safe to `.gitignore`, safe to
+delete, not meant to be synced or backed up separately from the photos
+themselves.
+
+## exiftool
+
+Culler uses `exiftool` for accurate capture dates, RAW previews, and video
+metadata. It's auto-detected on `PATH`, or downloaded automatically (pinned
+version, checksum-verified) into your user data directory the first time
+it's needed. If it's unavailable (offline, download blocked, unsupported
+platform), Culler degrades gracefully: JPEG/HEIC/PNG/TIFF dates still come
+from Pillow's EXIF reader, and RAW previews / video metadata show a
+placeholder with a visible notice instead of failing.
 
 ## Development
 
-Requires [uv](https://docs.astral.sh/uv/) (it installs Python 3.14 for you).
-
 ```sh
-uv sync
-uv run culler open ~/Photos/2025 --browser   # run against a folder
+uv sync                                      # install deps
+uv run culler open ~/Photos/2025 --browser   # run against a real folder
 uv run pytest                                # tests
+uv run ruff check                            # lint
+uv run ruff format                           # format
 ```
 
-## Install (once published — M4)
+See [SPEC.md](SPEC.md) for the full specification and [PLAN.md](PLAN.md) for
+implementation status.
 
-```sh
-uvx culler
-```
+## License
+
+<!-- TODO(license): not yet decided (SPEC §17.2) -- add a LICENSE file and
+     the corresponding pyproject classifier/license table once it is. -->
+Not yet chosen. Do not treat this repository as under any particular license
+until this section is updated.

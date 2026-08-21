@@ -1,8 +1,26 @@
 [project]
+# TODO(name): "culler" is taken on PyPI -- rename this project + the console
+# script + import package once the CTO picks a final name. Every spot that
+# needs to change is marked TODO(name).
 name = "culler"
 version = "0.1.0"
-description = "Local-first, folder-centric photo culling app."
+description = "Local-first, folder-centric photo culling app: the filesystem is the state."
+readme = "README.md"
 requires-python = ">=3.14"
+keywords = ["photo", "culling", "photography", "raw", "lightroom", "desktop"]
+# TODO(license): add the license table/classifier once the license is chosen
+# (SPEC §17.2). Do not add a LICENSE file before that decision either.
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Web Environment",
+    "Environment :: X11 Applications",
+    "Intended Audience :: End Users/Desktop",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Multimedia :: Graphics",
+    "Topic :: Multimedia :: Graphics :: Viewers",
+]
 dependencies = [
     "django~=6.0",
     "waitress",
@@ -14,7 +32,13 @@ dependencies = [
     "pywebview",
 ]
 
+[project.urls]
+# TODO(name): replace with the real repository URL once the project has its
+# final name/home (may move off the "photo-culler" working repo name too).
+Repository = "https://github.com/TODO-name/photo-culler"
+
 [project.scripts]
+# TODO(name): rename the console script alongside the project name.
 culler = "culler.cli:main"
 
 [dependency-groups]
@@ -22,6 +46,12 @@ dev = [
     "pytest",
     "pytest-django",
     "ruff",
+]
+# PyInstaller is only needed to build Tier-3 double-click bundles (SPEC §13);
+# it is not a runtime dependency of the library/CLI, so it lives in its own
+# group rather than `dev`.
+build = [
+    "pyinstaller",
 ]
 
 [build-system]
@@ -45,3 +75,6 @@ python_files = ["test_*.py"]
 testpaths = ["tests"]
 pythonpath = ["tests"]
 addopts = "-p _bootstrap"
+markers = [
+    "slow: exercises a real subprocess / server round trip (>5s)",
+]
