@@ -33,6 +33,13 @@
   {% if unresolved_pair_count %}
   <a class="dupes-badge" href="{% url 'dupes' %}">Dupes ({{ unresolved_pair_count }})</a>
   {% endif %}
+  {% if missing_count %}
+    {% if show_missing %}
+    <a class="missing-badge" href="{% url 'grid' %}">&larr; All photos</a>
+    {% else %}
+    <a class="missing-badge" href="{% url 'grid' %}?show=missing">Missing ({{ missing_count }})</a>
+    {% endif %}
+  {% endif %}
 </div>
 
 <div id="grid-content">

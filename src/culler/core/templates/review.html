@@ -17,6 +17,9 @@
       {% endif %}
     </div>
 
+    {% if photo.missing %}
+    <div class="review-actions review-missing-note">file is missing -- not found on disk at last scan</div>
+    {% else %}
     <div class="review-actions">
       <input type="hidden" name="context" value="review">
       <input type="hidden" name="next" value="{{ next_id|default_if_none:'' }}">
@@ -25,6 +28,7 @@
       <button type="button" id="action-reject" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .review-actions" hx-vals='{"status": "rejected"}' hx-swap="none">Reject (X)</button>
       <button type="button" id="action-undecide" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .review-actions" hx-vals='{"status": "optional"}' hx-swap="none">Undecide (U)</button>
     </div>
+    {% endif %}
 
     <nav class="review-nav">
       {% if prev_id %}<a id="prev-link" href="{% url 'review' prev_id %}{% if qs %}?{{ qs }}{% endif %}">&larr; Prev</a>{% endif %}

@@ -74,6 +74,8 @@ def grid(request):
         "filter_from": filters.get("from", ""),
         "filter_to": filters.get("to", ""),
         "unresolved_pair_count": phaseb.unresolved_pair_count(),
+        "missing_count": queries.missing_photo_count(),
+        "show_missing": filters.get("show") == "missing",
     }
     template = "_grid_items.html" if request.headers.get("HX-Request") else "grid.html"
     return render(request, template, context)

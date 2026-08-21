@@ -1,8 +1,11 @@
-<div class="cell status-{{ photo.status }}" id="cell-{{ photo.pk }}" data-pk="{{ photo.pk }}" tabindex="0">
+<div class="cell status-{{ photo.status }}{% if photo.missing %} cell-missing{% endif %}" id="cell-{{ photo.pk }}" data-pk="{{ photo.pk }}" tabindex="0">
   <a href="{% url 'review' photo.pk %}{% if querystring %}?{{ querystring }}{% endif %}">
     <img loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
   </a>
   <span class="badge badge-{{ photo.status }}">{{ photo.get_status_display }}</span>
+  {% if photo.missing %}
+  <span class="badge badge-missing" title="Not found on disk at last scan">Missing</span>
+  {% endif %}
   {% if photo.media_type == "video" %}
   <span class="badge badge-video" title="Video">&#9654;</span>
   {% endif %}
@@ -12,10 +15,14 @@
   {% if photo.dupe_count > 1 %}
   <span class="badge badge-dupe">&times;{{ photo.dupe_count }}</span>
   {% endif %}
+  {% if photo.missing %}
+  <div class="cell-note">file is missing</div>
+  {% else %}
   <div class="cell-actions" hx-target="#cell-{{ photo.pk }}" hx-swap="outerHTML">
     <input type="hidden" name="qs" value="{{ querystring }}">
     <button type="button" data-action="select" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .cell-actions" hx-vals='{"status": "selected", "context": "grid"}'>P</button>
     <button type="button" data-action="reject" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .cell-actions" hx-vals='{"status": "rejected", "context": "grid"}'>X</button>
     <button type="button" data-action="undecide" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .cell-actions" hx-vals='{"status": "optional", "context": "grid"}'>U</button>
   </div>
+  {% endif %}
 </div>

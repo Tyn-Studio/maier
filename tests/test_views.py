@@ -717,3 +717,81 @@ def test_review_non_live_photo_has_no_toggle_elements(client):
     body = response.content.decode()
     assert 'id="live-badge"' not in body
     assert 'id="review-live-video"' not in body
+
+
+# --- missing-file UX (T10) ---------------------------------------------
+
+
+@pytest.mark.django_db
+def test_grid_excludes_missing_by_default(client):
+    unique = "t_t10_grid_default"
+    present = _db_photo(f"{unique}/present.jpg", provenance=unique)
+    missing = _db_photo(f"{unique}/gone.jpg", provenance=unique, missing=True)
+
+    response = client.get(reverse("grid"), {"provenance": unique})
+
+    body = response.content.decode()
+    assert reverse("preview", args=[present.pk]) in body
+    assert reverse("preview", args=[missing.pk]) not in body
+
+
+@pytest.mark.django_db
+def test_grid_show_missing_returns_only_missing(client):
+    unique = "t_t10_grid_show_missing"
+    present = _db_photo(f"{unique}/present.jpg", provenance=unique)
+    missing = _db_photo(f"{unique}/gone.jpg", provenance=unique, missing=True)
+
+    response = client.get(reverse("grid"), {"provenance": unique, "show": "missing"})
+
+    body = response.content.decode()
+    assert reverse("preview", args=[missing.pk]) in body
+    assert reverse("preview", args=[present.pk]) not in body
+
+
+@pytest.mark.django_db
+def test_grid_missing_badge_appears_and_disappears(client):
+    unique = "t_t10_grid_badge"
+    response = client.get(reverse("grid"), {"provenance": unique})
+    assert "missing-badge" not in response.content.decode()
+
+    _db_photo(f"{unique}/gone.jpg", provenance=unique, missing=True)
+
+    response = client.get(reverse("grid"), {"provenance": unique})
+    body = response.content.decode()
+    assert "missing-badge" in body
+    assert "Missing (1)" in body
+
+    response = client.get(reverse("grid"), {"provenance": unique, "show": "missing"})
+    body = response.content.decode()
+    assert "All photos" in body
+
+
+@pytest.mark.django_db
+def test_grid_missing_cell_has_no_action_buttons(client):
+    unique = "t_t10_grid_missing_cell"
+    photo = _db_photo(f"{unique}/gone.jpg", provenance=unique, missing=True)
+
+    response = client.get(reverse("grid"), {"provenance": unique, "show": "missing"})
+
+    body = response.content.decode()
+    assert f'id="cell-{photo.pk}"' in body
+    assert "cell-missing" in body
+    assert "badge-missing" in body
+    assert "cell-actions" not in body
+    assert reverse("set-status", args=[photo.pk]) not in body
+
+
+@pytest.mark.django_db
+def test_review_missing_photo_renders_metadata_and_hides_actions(client):
+    unique = "t_t10_review_missing"
+    photo = _db_photo(f"{unique}/gone.jpg", provenance=unique, missing=True, file_size=555)
+
+    response = client.get(reverse("review", args=[photo.pk]), {"show": "missing"})
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "555 bytes" in body
+    assert "file is missing" in body
+    assert 'id="action-select"' not in body
+    assert 'id="action-reject"' not in body
+    assert 'id="action-undecide"' not in body

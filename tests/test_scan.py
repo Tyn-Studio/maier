@@ -1,3 +1,4 @@
+import hashlib
 import os
 import shutil
 import threading
@@ -36,6 +37,20 @@ def _build_tree(root: Path) -> None:
 
     (root / ".hidden").mkdir(parents=True, exist_ok=True)
     _make_jpeg(root / ".hidden" / "IMG_9999.jpg")
+
+
+def _sha256_of(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def _make_bytes(path: Path, content: bytes, mtime: float) -> None:
+    # Deliberately not a real image: capture_datetime degrades gracefully to
+    # the mtime fallback on unreadable content (metadata.py never raises),
+    # so plain bytes are enough to exercise scan/reconciliation logic while
+    # giving full control over exact file size for (size, mtime) collisions.
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_bytes(content)
+    os.utime(path, (mtime, mtime))
 
 
 EXPECTED_PATHS = {
@@ -139,7 +154,8 @@ def test_move_reconciliation_relinks_same_row(tmp_path):
     old_photo = Photo.objects.get(relative_path="apple-luis/IMG_0001.jpg")
     old_id = old_photo.id
     old_captured_at = old_photo.captured_at
-    old_photo.sha256 = "deadbeef"
+    real_sha = _sha256_of(tmp_path / "apple-luis" / "IMG_0001.jpg")
+    old_photo.sha256 = real_sha
     old_photo.save()
 
     new_path = tmp_path / "apple-luis" / "moved" / "IMG_0001.jpg"
@@ -152,7 +168,7 @@ def test_move_reconciliation_relinks_same_row(tmp_path):
 
     relinked = Photo.objects.get(relative_path="apple-luis/moved/IMG_0001.jpg")
     assert relinked.id == old_id
-    assert relinked.sha256 == "deadbeef"
+    assert relinked.sha256 == real_sha
     assert relinked.captured_at == old_captured_at
     assert relinked.missing is False
     assert relinked.status == Photo.STATUS_OPTIONAL
@@ -183,6 +199,102 @@ def test_reconciliation_consumes_candidate_once(tmp_path):
     assert relinked.missing is False
     missing = Photo.objects.exclude(pk=relinked.pk).get()
     assert missing.missing is True
+
+
+@pytest.mark.django_db
+def test_hash_confirmed_reconciliation_relinks_to_matching_content(tmp_path):
+    # Two same-(size, mtime) candidates appear at the new location; only one
+    # matches the vanished row's sha256 -- the mismatched one must stay a
+    # distinct, non-missing "new" Photo row, not get relinked.
+    content_match = b"AAAA" * 100
+    content_other = b"BBBB" * 100  # same length, different bytes
+    mtime = 1_700_000_000.0
+
+    old_path = tmp_path / "a" / "photo.jpg"
+    _make_bytes(old_path, content_match, mtime)
+    scan(tmp_path, ScanProgress())
+
+    old_photo = Photo.objects.get(relative_path="a/photo.jpg")
+    old_id = old_photo.id
+    old_photo.sha256 = hashlib.sha256(content_match).hexdigest()
+    old_photo.save()
+
+    _make_bytes(tmp_path / "b" / "match.jpg", content_match, mtime)
+    _make_bytes(tmp_path / "b" / "other.jpg", content_other, mtime)
+    old_path.unlink()
+
+    scan(tmp_path, ScanProgress())
+
+    relinked = Photo.objects.get(relative_path="b/match.jpg")
+    assert relinked.id == old_id
+    assert relinked.missing is False
+
+    other = Photo.objects.get(relative_path="b/other.jpg")
+    assert other.id != old_id
+    assert other.missing is False
+
+
+@pytest.mark.django_db
+def test_hash_confirmed_reconciliation_no_match_marks_missing(tmp_path):
+    content_a = b"AAAA" * 100
+    content_c = b"CCCC" * 100  # same size, no candidate matches this content
+    mtime = 1_700_000_000.0
+
+    old_path = tmp_path / "a" / "photo.jpg"
+    _make_bytes(old_path, content_a, mtime)
+    scan(tmp_path, ScanProgress())
+
+    old_photo = Photo.objects.get(relative_path="a/photo.jpg")
+    old_photo.sha256 = hashlib.sha256(content_a).hexdigest()
+    old_photo.save()
+
+    _make_bytes(tmp_path / "b" / "different.jpg", content_c, mtime)
+    old_path.unlink()
+
+    scan(tmp_path, ScanProgress())
+
+    old_photo.refresh_from_db()
+    assert old_photo.missing is True
+    assert old_photo.relative_path == "a/photo.jpg"
+
+    new_photo = Photo.objects.get(relative_path="b/different.jpg")
+    assert new_photo.missing is False
+
+
+@pytest.mark.django_db
+def test_hash_confirmed_reconciliation_disambiguates_two_pairs(tmp_path):
+    # Two vanished hashed rows share a (size, mtime) key with two moved
+    # files at that same key -- both must re-link to their own content.
+    content_x = b"XXXX" * 100
+    content_y = b"YYYY" * 100
+    mtime = 1_700_000_000.0
+
+    path_x = tmp_path / "a" / "x.jpg"
+    path_y = tmp_path / "a" / "y.jpg"
+    _make_bytes(path_x, content_x, mtime)
+    _make_bytes(path_y, content_y, mtime)
+    scan(tmp_path, ScanProgress())
+
+    photo_x = Photo.objects.get(relative_path="a/x.jpg")
+    photo_y = Photo.objects.get(relative_path="a/y.jpg")
+    photo_x.sha256 = hashlib.sha256(content_x).hexdigest()
+    photo_x.save()
+    photo_y.sha256 = hashlib.sha256(content_y).hexdigest()
+    photo_y.save()
+
+    _make_bytes(tmp_path / "b" / "x-new.jpg", content_x, mtime)
+    _make_bytes(tmp_path / "b" / "y-new.jpg", content_y, mtime)
+    path_x.unlink()
+    path_y.unlink()
+
+    scan(tmp_path, ScanProgress())
+
+    relinked_x = Photo.objects.get(relative_path="b/x-new.jpg")
+    relinked_y = Photo.objects.get(relative_path="b/y-new.jpg")
+    assert relinked_x.id == photo_x.id
+    assert relinked_y.id == photo_y.id
+    assert relinked_x.missing is False
+    assert relinked_y.missing is False
 
 
 @pytest.mark.django_db

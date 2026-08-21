@@ -4,10 +4,12 @@
 """
 
 import hashlib
+import tempfile
 from pathlib import Path
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
+from . import exiftool as exiftool_module
 from .models import Photo
 
 try:
@@ -61,9 +63,12 @@ def _preview_key(folder: Path, photo: Photo) -> str:
     return _content_key(src)
 
 
-def _is_raw_or_video(path: Path) -> bool:
-    ext = path.suffix.lower()
-    return ext in RAW_EXTENSIONS or ext in VIDEO_EXTENSIONS
+def _is_raw(path: Path) -> bool:
+    return path.suffix.lower() in RAW_EXTENSIONS
+
+
+def _is_video(path: Path) -> bool:
+    return path.suffix.lower() in VIDEO_EXTENSIONS
 
 
 def _placeholder_path(folder: Path) -> Path:
@@ -87,12 +92,16 @@ def preview_path(folder: Path, photo: Photo) -> Path:
     """Return the cached preview path, generating it first if absent.
 
     Never raises: any failure (missing source, unreadable/corrupt file,
-    RAW/video extension) falls back to a shared placeholder image.
+    exiftool absent/failing on RAW, video extension) falls back to a shared
+    placeholder image.
     """
     src = folder / photo.relative_path
 
-    if _is_raw_or_video(src):
+    if _is_video(src):
         return _placeholder_path(folder)
+
+    if _is_raw(src):
+        return _raw_preview_path(folder, photo, src)
 
     try:
         key = _preview_key(folder, photo)
@@ -108,5 +117,38 @@ def preview_path(folder: Path, photo: Photo) -> Path:
     except _PREVIEW_GENERATION_ERRORS:
         dest.unlink(missing_ok=True)
         return _placeholder_path(folder)
+
+    return dest
+
+
+def _raw_preview_path(folder: Path, photo: Photo, src: Path) -> Path:
+    """RAW embedded-preview extraction (SPEC §6 Phase B item 1): extract via
+    exiftool into a temp file, then run it through the normal resize/orient
+    pipeline into the content-keyed cache path. Falls back to the shared
+    placeholder whenever exiftool is absent or extraction/decoding fails.
+    """
+    exiftool_path = exiftool_module.find_exiftool()
+    if exiftool_path is None:
+        return _placeholder_path(folder)
+
+    try:
+        key = _preview_key(folder, photo)
+    except OSError:
+        return _placeholder_path(folder)
+
+    dest = _previews_dir(folder) / f"{key}.jpg"
+    if dest.exists():
+        return dest
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        extracted = Path(tmp_dir) / "extracted.jpg"
+        if not exiftool_module.extract_embedded_preview(exiftool_path, src, extracted):
+            return _placeholder_path(folder)
+
+        try:
+            _generate_image_preview(extracted, dest)
+        except _PREVIEW_GENERATION_ERRORS:
+            dest.unlink(missing_ok=True)
+            return _placeholder_path(folder)
 
     return dest

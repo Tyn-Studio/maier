@@ -138,7 +138,7 @@ def scan(folder: Path, progress: ScanProgress) -> None:
             finally:
                 progress.done += 1
 
-        _reconcile_missing(existing, seen_paths, new_by_key)
+        _reconcile_missing(folder, existing, seen_paths, new_by_key)
 
         # Kick off Phase B (SHA-256 + exact-dupe grouping) after a
         # successful Phase A pass. Imported inline to avoid a module cycle
@@ -151,38 +151,76 @@ def scan(folder: Path, progress: ScanProgress) -> None:
         progress.finished = True
 
 
+def _find_hash_match(folder: Path, sha256: str, candidates: list[str]) -> str | None:
+    """First candidate (by path, sorted -- deterministic when several match,
+    which can only happen for byte-identical files) whose content hashes to
+    `sha256`. `phaseb._sha256_file` is reused rather than duplicated here.
+    """
+    from .phaseb import _sha256_file
+
+    for rel in sorted(candidates):
+        try:
+            if _sha256_file(folder / rel) == sha256:
+                return rel
+        except OSError:
+            continue
+    return None
+
+
 def _reconcile_missing(
+    folder: Path,
     existing: dict[str, Photo],
     seen_paths: set[str],
     new_by_key: dict[tuple[int, float], list[str]],
 ) -> None:
+    """A vanished indexed path re-links to a candidate "new" path with an
+    identical (size, mtime) -- hash-confirmed when the vanished row already
+    has a sha256 (SPEC §6). Without a sha256, falls back to the simple
+    single-candidate rule (ambiguous multi-candidate cases go `missing`;
+    the next Phase B run's hashing lets a later rescan disambiguate them).
+    """
     for rel_str, photo in existing.items():
         if rel_str in seen_paths:
             continue  # still present (possibly just updated above)
 
         key = (photo.file_size, photo.file_mtime)
-        matches = new_by_key.get(key, [])
-        if len(matches) == 1:
-            new_rel = matches[0]
-            new_photo = Photo.objects.filter(relative_path=new_rel).first()
-            if new_photo is None:
+        candidates = new_by_key.get(key, [])
+
+        if not candidates:
+            Photo.objects.filter(pk=photo.pk).update(missing=True)
+            continue
+
+        if photo.sha256:
+            new_rel = _find_hash_match(folder, photo.sha256, candidates)
+            if new_rel is None:
                 Photo.objects.filter(pk=photo.pk).update(missing=True)
                 continue
-            status, provenance = _status_and_provenance(Path(new_rel))
-            # Drop the placeholder row created for the "new" path this scan,
-            # then re-link the original row (keeps id, sha256, captured_at).
-            new_photo.delete()
-            Photo.objects.filter(pk=photo.pk).update(
-                relative_path=new_rel,
-                status=status,
-                provenance=provenance,
-                missing=False,
-            )
-            # Consume the candidate: a second vanished row with the same
-            # (size, mtime) must fall through to missing, not steal this path.
-            del new_by_key[key]
+        elif len(candidates) == 1:
+            new_rel = candidates[0]
         else:
             Photo.objects.filter(pk=photo.pk).update(missing=True)
+            continue
+
+        new_photo = Photo.objects.filter(relative_path=new_rel).first()
+        if new_photo is None:
+            Photo.objects.filter(pk=photo.pk).update(missing=True)
+            continue
+        status, provenance = _status_and_provenance(Path(new_rel))
+        # Drop the placeholder row created for the "new" path this scan,
+        # then re-link the original row (keeps id, sha256, captured_at).
+        new_photo.delete()
+        Photo.objects.filter(pk=photo.pk).update(
+            relative_path=new_rel,
+            status=status,
+            provenance=provenance,
+            missing=False,
+        )
+        # Consume just this candidate: a second vanished row with the same
+        # (size, mtime) key can still be resolved against whatever remains
+        # (hash-disambiguated, or fall through to missing).
+        candidates.remove(new_rel)
+        if not candidates:
+            del new_by_key[key]
 
 
 _scan_state_lock = threading.Lock()

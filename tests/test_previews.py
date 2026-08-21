@@ -1,4 +1,5 @@
 import io
+import stat
 from datetime import UTC, datetime
 
 import pytest
@@ -6,11 +7,19 @@ from django.conf import settings
 from django.urls import reverse
 from PIL import Image
 
+from culler.core import exiftool as exiftool_module
 from culler.core import previews
 from culler.core.models import Photo
 from culler.core.previews import _content_key, _preview_key, preview_path
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
+
+
+@pytest.fixture(autouse=True)
+def _reset_exiftool_cache():
+    exiftool_module._reset_cache()
+    yield
+    exiftool_module._reset_cache()
 
 
 def _photo(relative_path: str, sha256: str | None = None) -> Photo:
@@ -169,6 +178,59 @@ def test_raw_extension_returns_placeholder(tmp_path):
     assert result.name == "_placeholder.jpg"
     with Image.open(result) as img:
         assert img.size[0] == 2048
+
+
+def test_raw_extension_placeholder_when_exiftool_absent(tmp_path, monkeypatch):
+    monkeypatch.setattr(exiftool_module, "find_exiftool", lambda: None)
+    src = tmp_path / "photo.cr2"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"not a real raw file")
+    photo = _photo("photo.cr2", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    assert result.name == "_placeholder.jpg"
+
+
+def _make_fake_exiftool(tmp_path, jpeg_source):
+    script = tmp_path / "fake_exiftool.sh"
+    script.write_text(f"#!/bin/sh\ncat '{jpeg_source}'\n")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    return script
+
+
+def test_raw_extension_generates_real_preview_via_fake_exiftool(tmp_path, monkeypatch):
+    jpeg_source = tmp_path / "embedded.jpg"
+    _save_jpeg(jpeg_source, size=(3000, 2000))
+    script = _make_fake_exiftool(tmp_path, jpeg_source)
+    monkeypatch.setattr(exiftool_module, "find_exiftool", lambda: script)
+
+    raw_src = tmp_path / "photo.cr2"
+    raw_src.write_bytes(b"not a real raw file")
+    photo = _photo("photo.cr2", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    assert result.name != "_placeholder.jpg"
+    assert result == tmp_path / ".culler" / "previews" / f"{_content_key(raw_src)}.jpg"
+    with Image.open(result) as img:
+        assert img.format == "JPEG"
+        assert max(img.size) <= previews.MAX_DIMENSION
+
+
+def test_raw_extension_falls_back_when_extraction_fails(tmp_path, monkeypatch):
+    script = tmp_path / "fake_exiftool.sh"
+    script.write_text("#!/bin/sh\nexit 1\n")
+    script.chmod(script.stat().st_mode | stat.S_IEXEC | stat.S_IXGRP | stat.S_IXOTH)
+    monkeypatch.setattr(exiftool_module, "find_exiftool", lambda: script)
+
+    raw_src = tmp_path / "photo.cr2"
+    raw_src.write_bytes(b"not a real raw file")
+    photo = _photo("photo.cr2", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    assert result.name == "_placeholder.jpg"
 
 
 def test_video_extension_returns_placeholder(tmp_path):

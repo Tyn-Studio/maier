@@ -17,14 +17,21 @@ from .models import Photo
 
 
 def filtered_photos(params: QueryDict | dict[str, Any]) -> QuerySet[Photo]:
-    """captured_at-ascending queryset, missing excluded, with optional
-    status / provenance / capture-date-range filters from a GET querydict.
-    Exact-dupe groups (SPEC §8) are collapsed to their representative --
-    redundant copies never appear in the grid/filmstrip/navigation order.
+    """captured_at-ascending queryset, with optional status / provenance /
+    capture-date-range filters from a GET querydict.
+
+    Missing photos (SPEC §6 "hidden by default, state retained") are
+    excluded unless `?show=missing`, which flips to *only* missing photos --
+    the dedicated missing-file review list. Exact-dupe/Live-Photo-companion
+    collapsing (SPEC §8/§6.4) only applies to the normal, non-missing view:
+    both helpers already scope to `missing=False` photos, so they'd never
+    match anything in the missing view anyway.
     """
-    qs = Photo.objects.filter(missing=False).order_by("captured_at", "pk")
-    qs = qs.exclude(pk__in=phaseb.non_representative_pks())
-    qs = qs.exclude(relative_path__in=phaseb.live_photo_companion_paths())
+    show_missing = params.get("show") == "missing"
+    qs = Photo.objects.filter(missing=show_missing).order_by("captured_at", "pk")
+    if not show_missing:
+        qs = qs.exclude(pk__in=phaseb.non_representative_pks())
+        qs = qs.exclude(relative_path__in=phaseb.live_photo_companion_paths())
 
     status = params.get("status")
     if status:
@@ -75,6 +82,10 @@ def group_by_day(photos: list[Photo]) -> list[dict[str, Any]]:
 
 def _format_day(d: date) -> str:
     return f"{d.strftime('%a')} {d.day} {d.strftime('%b')} {d.year}"
+
+
+def missing_photo_count() -> int:
+    return Photo.objects.filter(missing=True).count()
 
 
 def distinct_provenances() -> list[str]:
