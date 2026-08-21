@@ -1,12 +1,15 @@
-/* Culler — minimal dark shell. Real styling arrives with T5. */
+/* Culler — minimal dark shell + T5 UI (grid / review / filter bar). */
 
 :root {
   color-scheme: dark;
   --bg: #14161a;
+  --bg-raised: #1b1e24;
   --fg: #e8e8ea;
   --muted: #9a9ca3;
   --accent: #4f8cff;
   --border: #2a2d33;
+  --green: #35c46a;
+  --red: #e2554b;
 }
 
 * {
@@ -34,4 +37,314 @@ a {
 
 main {
   padding: 1.5rem;
+}
+
+/* --- indexing banner ----------------------------------------------- */
+
+.banner {
+  padding: 0.5rem 0.75rem;
+  margin-bottom: 0.75rem;
+  border-radius: 6px;
+  font-size: 0.9rem;
+}
+
+.banner.indexing {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  color: var(--muted);
+}
+
+.banner.hidden {
+  display: none;
+}
+
+/* --- filter bar ------------------------------------------------------ */
+
+.filter-bar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: end;
+  gap: 1rem;
+  padding: 0.75rem;
+  margin-bottom: 1rem;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+}
+
+.filter-bar label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.filter-bar select,
+.filter-bar input,
+.filter-bar button {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.9rem;
+}
+
+.filter-bar button {
+  cursor: pointer;
+  align-self: center;
+}
+
+/* --- timeline grid ----------------------------------------------------- */
+
+.day-header {
+  margin: 1.5rem 0 0.5rem;
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--muted);
+  border-bottom: 1px solid var(--border);
+  padding-bottom: 0.25rem;
+}
+
+.grid-cells {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 0.5rem;
+}
+
+.cell {
+  position: relative;
+  border: 2px solid transparent;
+  border-radius: 6px;
+  overflow: hidden;
+  background: var(--bg-raised);
+  outline: none;
+}
+
+.cell img {
+  display: block;
+  width: 100%;
+  aspect-ratio: 1 / 1;
+  object-fit: cover;
+}
+
+.cell.status-selected {
+  border-color: var(--green);
+}
+
+.cell.status-rejected {
+  border-color: var(--red);
+}
+
+.cell.focused {
+  box-shadow: 0 0 0 2px var(--accent);
+}
+
+.badge {
+  position: absolute;
+  top: 0.35rem;
+  left: 0.35rem;
+  padding: 0.1rem 0.4rem;
+  border-radius: 4px;
+  font-size: 0.7rem;
+  text-transform: uppercase;
+  background: rgba(0, 0, 0, 0.55);
+  color: var(--muted);
+}
+
+.badge-selected {
+  color: var(--green);
+}
+
+.badge-rejected {
+  color: var(--red);
+}
+
+.cell-actions {
+  position: absolute;
+  bottom: 0.35rem;
+  right: 0.35rem;
+  display: flex;
+  gap: 0.25rem;
+  opacity: 0;
+  transition: opacity 0.1s ease;
+}
+
+.cell:hover .cell-actions,
+.cell.focused .cell-actions {
+  opacity: 1;
+}
+
+.cell-actions button {
+  background: rgba(0, 0, 0, 0.6);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.1rem 0.4rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.empty-state {
+  color: var(--muted);
+  padding: 2rem 0;
+  text-align: center;
+}
+
+.sentinel {
+  height: 1px;
+}
+
+/* --- review screen ------------------------------------------------------ */
+
+.review-layout {
+  display: flex;
+  gap: 1.5rem;
+  align-items: flex-start;
+}
+
+.review-main {
+  flex: 1;
+  min-width: 0;
+}
+
+.back-link {
+  display: inline-block;
+  margin-bottom: 0.75rem;
+}
+
+.review-image-wrap {
+  display: flex;
+  justify-content: center;
+  background: #000;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.review-image {
+  max-width: 100%;
+  max-height: 75vh;
+  display: block;
+}
+
+.review-actions {
+  display: flex;
+  gap: 0.5rem;
+  margin-top: 0.75rem;
+}
+
+.review-actions button {
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+}
+
+.review-nav {
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+  margin-top: 0.75rem;
+  color: var(--muted);
+}
+
+.filmstrip {
+  display: flex;
+  gap: 0.35rem;
+  overflow-x: auto;
+  margin-top: 1rem;
+  padding-bottom: 0.5rem;
+}
+
+.filmstrip-item {
+  flex: 0 0 auto;
+  width: 90px;
+  height: 90px;
+  border: 2px solid transparent;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.filmstrip-item img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.filmstrip-item.current {
+  border-color: var(--accent);
+}
+
+.review-sidebar {
+  flex: 0 0 260px;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+}
+
+.review-sidebar dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 0.75rem;
+  margin: 0;
+}
+
+.review-sidebar dt {
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+
+.review-sidebar dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.warn {
+  color: #e2b34b;
+}
+
+/* --- shortcuts overlay -------------------------------------------------- */
+
+.shortcuts-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+}
+
+.shortcuts-overlay.hidden {
+  display: none;
+}
+
+.shortcuts-box {
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1.5rem;
+  min-width: 280px;
+}
+
+.shortcuts-box dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.35rem 1rem;
+}
+
+.shortcuts-box dt {
+  color: var(--accent);
+  font-weight: 600;
+}
+
+.shortcuts-box .hint {
+  color: var(--muted);
+  font-size: 0.8rem;
+  margin-top: 1rem;
+  margin-bottom: 0;
 }

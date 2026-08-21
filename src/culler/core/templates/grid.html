@@ -1,0 +1,38 @@
+{% extends "base.html" %}
+{% block page_name %}grid{% endblock %}
+{% block content %}
+<div id="scan-banner" hx-get="{% url 'scan-status' %}" hx-trigger="load, every 2s" hx-swap="innerHTML">
+  {% include "_scan_banner.html" %}
+</div>
+
+<div id="filter-bar" class="filter-bar"
+     hx-get="{% url 'grid' %}"
+     hx-trigger="change"
+     hx-target="#grid-content"
+     hx-swap="innerHTML"
+     hx-include="#filter-bar select, #filter-bar input">
+  <label>Status
+    <select name="status">
+      <option value="" {% if not filter_status %}selected{% endif %}>All</option>
+      <option value="optional" {% if filter_status == "optional" %}selected{% endif %}>Optional</option>
+      <option value="selected" {% if filter_status == "selected" %}selected{% endif %}>Selected</option>
+      <option value="rejected" {% if filter_status == "rejected" %}selected{% endif %}>Rejected</option>
+    </select>
+  </label>
+  <label>Provenance
+    <select name="provenance">
+      <option value="">All</option>
+      {% for p in provenances %}
+      <option value="{{ p }}" {% if p == filter_provenance %}selected{% endif %}>{{ p }}</option>
+      {% endfor %}
+    </select>
+  </label>
+  <label>From <input type="date" name="from" value="{{ filter_from }}"></label>
+  <label>To <input type="date" name="to" value="{{ filter_to }}"></label>
+  <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-banner" hx-swap="innerHTML">Rescan</button>
+</div>
+
+<div id="grid-content">
+  {% include "_grid_items.html" %}
+</div>
+{% endblock %}

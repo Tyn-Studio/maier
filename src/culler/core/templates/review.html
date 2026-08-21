@@ -1,0 +1,61 @@
+{% extends "base.html" %}
+{% block page_name %}review{% endblock %}
+{% block content %}
+<div class="review-layout">
+  <div class="review-main">
+    <a id="back-to-grid" class="back-link" href="{% url 'grid' %}{% if qs %}?{{ qs }}{% endif %}">&larr; Back to grid</a>
+
+    <div class="review-image-wrap">
+      {% if photo.media_type == "video" %}
+      <video controls preload="metadata" class="review-image" src="{% url 'preview' photo.pk %}"></video>
+      {% else %}
+      <img class="review-image" src="{% url 'preview' photo.pk %}" alt="">
+      {% endif %}
+    </div>
+
+    <div class="review-actions">
+      <input type="hidden" name="context" value="review">
+      <input type="hidden" name="next" value="{{ next_id|default_if_none:'' }}">
+      <input type="hidden" name="qs" value="{{ qs }}">
+      <button type="button" id="action-select" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .review-actions" hx-vals='{"status": "selected"}' hx-swap="none">Select (P)</button>
+      <button type="button" id="action-reject" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .review-actions" hx-vals='{"status": "rejected"}' hx-swap="none">Reject (X)</button>
+      <button type="button" id="action-undecide" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .review-actions" hx-vals='{"status": "optional"}' hx-swap="none">Undecide (U)</button>
+    </div>
+
+    <nav class="review-nav">
+      {% if prev_id %}<a id="prev-link" href="{% url 'review' prev_id %}{% if qs %}?{{ qs }}{% endif %}">&larr; Prev</a>{% endif %}
+      {% if total %}<span class="review-position">{{ index|add:1 }} / {{ total }}</span>{% endif %}
+      {% if next_id %}<a id="next-link" href="{% url 'review' next_id %}{% if qs %}?{{ qs }}{% endif %}">Next &rarr;</a>{% endif %}
+    </nav>
+
+    <div class="filmstrip">
+      {% for f in filmstrip %}
+      <a class="filmstrip-item{% if f.pk == photo.pk %} current{% endif %}" href="{% url 'review' f.pk %}{% if qs %}?{{ qs }}{% endif %}">
+        <img loading="lazy" src="{% url 'preview' f.pk %}" alt="">
+      </a>
+      {% endfor %}
+    </div>
+  </div>
+
+  <aside class="review-sidebar">
+    <h2>Metadata</h2>
+    <dl>
+      <dt>Captured</dt>
+      <dd>
+        {{ photo.captured_at }}
+        {% if photo.captured_at_source != "exif" %}
+        <span class="warn" title="Low-confidence date ({{ photo.captured_at_source }})">&#9888;</span>
+        {% endif %}
+      </dd>
+      <dt>Provenance</dt>
+      <dd>{{ photo.provenance|default:"(root)" }}</dd>
+      <dt>Size</dt>
+      <dd>{{ photo.file_size }} bytes</dd>
+      <dt>Path</dt>
+      <dd>{{ photo.relative_path }}</dd>
+      <dt>Status</dt>
+      <dd>{{ photo.get_status_display }}</dd>
+    </dl>
+  </aside>
+</div>
+{% endblock %}

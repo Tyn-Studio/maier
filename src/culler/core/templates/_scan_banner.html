@@ -1,0 +1,7 @@
+{% if progress and not progress.finished %}
+<div class="banner indexing">
+  Indexing {{ progress.done }} / {{ progress.total }}{% if progress.errors %} ({{ progress.errors|length }} errors){% endif %}
+</div>
+{% else %}
+<div class="banner hidden"></div>
+{% endif %}

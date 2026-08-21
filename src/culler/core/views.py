@@ -1,9 +1,19 @@
-from django.conf import settings
-from django.http import FileResponse, Http404, HttpResponse
-from django.shortcuts import render
+"""Thin request handlers -- filtering/grouping logic lives in queries.py,
+file moves in moves.py, previews in previews.py. See SPEC §10 for the UI
+spec these implement.
+"""
 
-from . import previews
+from django.conf import settings
+from django.core.paginator import Paginator
+from django.http import FileResponse, HttpResponse, HttpResponseNotAllowed
+from django.shortcuts import get_object_or_404, redirect, render
+from django.urls import reverse
+
+from . import moves, previews, queries
 from .models import Photo
+
+PAGE_SIZE = 200
+NEIGHBOUR_WINDOW = 10
 
 
 def healthz(request):
@@ -11,15 +21,126 @@ def healthz(request):
 
 
 def home(request):
-    return render(request, "base.html", {"message": "Culler — no folder UI yet"})
+    return redirect("grid")
 
 
 def preview(request, pk):
-    try:
-        photo = Photo.objects.get(pk=pk)
-    except Photo.DoesNotExist as exc:
-        raise Http404 from exc
+    photo = get_object_or_404(Photo, pk=pk)
     path = previews.preview_path(settings.WORKING_FOLDER, photo)
     response = FileResponse(path.open("rb"), content_type="image/jpeg")
     response["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
+
+
+def grid(request):
+    filters = request.GET
+    photos_qs = queries.filtered_photos(filters)
+    paginator = Paginator(photos_qs, PAGE_SIZE)
+    page = paginator.get_page(filters.get("page") or 1)
+
+    context = {
+        "day_groups": queries.group_by_day(list(page.object_list)),
+        "page": page,
+        "querystring": queries.querystring_without_page(filters),
+        "provenances": queries.distinct_provenances(),
+        "filter_status": filters.get("status", ""),
+        "filter_provenance": filters.get("provenance", ""),
+        "filter_from": filters.get("from", ""),
+        "filter_to": filters.get("to", ""),
+    }
+    template = "_grid_items.html" if request.headers.get("HX-Request") else "grid.html"
+    return render(request, template, context)
+
+
+def review(request, pk):
+    photo = get_object_or_404(Photo, pk=pk)
+    filters = request.GET
+    ordered_pks = list(queries.filtered_photos(filters).values_list("pk", flat=True))
+
+    idx = ordered_pks.index(pk) if pk in ordered_pks else None
+    prev_id = next_id = None
+    filmstrip_pks: list[int] = []
+    if idx is not None:
+        prev_id = ordered_pks[idx - 1] if idx > 0 else None
+        next_id = ordered_pks[idx + 1] if idx + 1 < len(ordered_pks) else None
+        window_start = max(0, idx - NEIGHBOUR_WINDOW)
+        window_end = idx + NEIGHBOUR_WINDOW + 1
+        filmstrip_pks = ordered_pks[window_start:window_end]
+
+    photos_by_pk = {p.pk: p for p in Photo.objects.filter(pk__in=filmstrip_pks)}
+    filmstrip = [photos_by_pk[fpk] for fpk in filmstrip_pks if fpk in photos_by_pk]
+
+    context = {
+        "photo": photo,
+        "prev_id": prev_id,
+        "next_id": next_id,
+        "filmstrip": filmstrip,
+        "qs": filters.urlencode(),
+        "index": idx,
+        "total": len(ordered_pks),
+    }
+    return render(request, "review.html", context)
+
+
+def set_status(request, pk):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    photo = get_object_or_404(Photo, pk=pk)
+    new_status = request.POST.get("status", "")
+    context_mode = request.POST.get("context", "grid")
+    qs = request.POST.get("qs", "")
+
+    try:
+        photo = moves.apply_status(settings.WORKING_FOLDER, photo, new_status)
+    except ValueError:
+        return HttpResponse("invalid status", status=400)
+    except FileNotFoundError:
+        return HttpResponse("file moved or deleted outside Culler", status=409)
+
+    if context_mode == "review":
+        next_id = request.POST.get("next")
+        url = reverse("review", args=[next_id]) if next_id else reverse("grid")
+        if qs:
+            url = f"{url}?{qs}"
+        response = HttpResponse(status=200)
+        response["HX-Redirect"] = url
+        return response
+
+    return render(request, "_grid_cell.html", {"photo": photo, "querystring": qs})
+
+
+def _in_flight_scan_progress():
+    """Pragmatic single-module read of scan.py's in-flight ScanProgress.
+    Isolated here (per PLAN T5 brief) rather than spread across views --
+    scan.py exposes no public accessor for "is a scan currently running".
+    """
+    from . import scan as scan_module
+
+    progress = scan_module._current_scan
+    if progress is not None and not progress.finished:
+        return progress
+    return None
+
+
+def scan_status(request):
+    from .scan import start_background_scan
+
+    progress = _in_flight_scan_progress()
+    if progress is None and not Photo.objects.exists():
+        # Nothing indexed yet and nothing running: kick off the first scan
+        # so a fresh `culler open` in browser mode (which missed the CLI's
+        # own start_background_scan call, e.g. tests hitting the view
+        # directly) still gets indexed.
+        progress = start_background_scan(settings.WORKING_FOLDER)
+    return render(request, "_scan_banner.html", {"progress": progress})
+
+
+def rescan(request):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    from .scan import start_background_scan
+
+    progress = start_background_scan(settings.WORKING_FOLDER)
+    return render(request, "_scan_banner.html", {"progress": progress})

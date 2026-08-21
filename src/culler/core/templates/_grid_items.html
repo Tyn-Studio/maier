@@ -1,0 +1,19 @@
+{% for group in day_groups %}
+<div class="day-header">{{ group.day }}</div>
+<div class="grid-cells">
+  {% for photo in group.photos %}
+    {% include "_grid_cell.html" %}
+  {% endfor %}
+</div>
+{% endfor %}
+{% if not day_groups %}
+<p class="empty-state">No photos match these filters.</p>
+{% endif %}
+{% if page.has_next %}
+<div class="sentinel"
+     hx-get="{% url 'grid' %}?{% if querystring %}{{ querystring }}&{% endif %}page={{ page.next_page_number }}"
+     hx-trigger="revealed"
+     hx-swap="outerHTML"
+     hx-target="this">
+</div>
+{% endif %}

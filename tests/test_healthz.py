@@ -8,7 +8,7 @@ def test_healthz_ok(client):
     assert response.content == b"ok"
 
 
-def test_home_renders(client):
+def test_home_redirects_to_grid(client):
     response = client.get("/")
-    assert response.status_code == 200
-    assert b"Culler" in response.content
+    assert response.status_code == 302
+    assert response.url == "/grid"

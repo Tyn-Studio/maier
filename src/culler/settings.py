@@ -73,6 +73,9 @@ MIDDLEWARE = [
     "django.middleware.security.SecurityMiddleware",
     "whitenoise.middleware.WhiteNoiseMiddleware",
     "django.middleware.common.CommonMiddleware",
+    # set-status moves files on POST; CSRF protection stops drive-by pages
+    # from form-POSTing to 127.0.0.1 even though we only bind localhost.
+    "django.middleware.csrf.CsrfViewMiddleware",
 ]
 
 ROOT_URLCONF = "culler.urls"

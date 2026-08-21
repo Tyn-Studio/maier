@@ -71,6 +71,10 @@ def cmd_open(args: argparse.Namespace) -> int:
 
     application = get_wsgi_application()
 
+    from culler.core.scan import start_background_scan
+
+    start_background_scan(folder)
+
     port = _pick_port(args.port)
     url = f"http://127.0.0.1:{port}/"
     print(f"Culler serving {folder} at {url}  (Ctrl-C to stop)")

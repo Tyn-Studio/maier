@@ -1,0 +1,12 @@
+<div class="cell status-{{ photo.status }}" id="cell-{{ photo.pk }}" data-pk="{{ photo.pk }}" tabindex="0">
+  <a href="{% url 'review' photo.pk %}{% if querystring %}?{{ querystring }}{% endif %}">
+    <img loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
+  </a>
+  <span class="badge badge-{{ photo.status }}">{{ photo.get_status_display }}</span>
+  <div class="cell-actions" hx-target="#cell-{{ photo.pk }}" hx-swap="outerHTML">
+    <input type="hidden" name="qs" value="{{ querystring }}">
+    <button type="button" data-action="select" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .cell-actions" hx-vals='{"status": "selected", "context": "grid"}'>P</button>
+    <button type="button" data-action="reject" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .cell-actions" hx-vals='{"status": "rejected", "context": "grid"}'>X</button>
+    <button type="button" data-action="undecide" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .cell-actions" hx-vals='{"status": "optional", "context": "grid"}'>U</button>
+  </div>
+</div>
