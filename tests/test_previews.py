@@ -1,0 +1,253 @@
+import io
+from datetime import UTC, datetime
+
+import pytest
+from django.conf import settings
+from django.urls import reverse
+from PIL import Image
+
+from culler.core import previews
+from culler.core.models import Photo
+from culler.core.previews import _content_key, _preview_key, preview_path
+
+_CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
+
+
+def _photo(relative_path: str, sha256: str | None = None) -> Photo:
+    return Photo(relative_path=relative_path, sha256=sha256)
+
+
+def _db_photo(relative_path: str, **overrides) -> Photo:
+    kwargs = dict(
+        relative_path=relative_path,
+        status=Photo.STATUS_OPTIONAL,
+        provenance="",
+        file_size=1234,
+        file_mtime=1_700_000_000.0,
+        captured_at=_CAPTURED,
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    kwargs.update(overrides)
+    return Photo.objects.create(**kwargs)
+
+
+def _save_jpeg(path, size=(3000, 2000), mode="RGB", exif=None):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.new(mode, size, color=(200, 50, 50))
+    kwargs = {}
+    if exif is not None:
+        kwargs["exif"] = exif
+    img.save(path, "JPEG", **kwargs)
+
+
+def _save_png(path, size=(100, 100), mode="RGBA"):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    img = Image.new(mode, size, color=(10, 20, 30, 128))
+    img.save(path, "PNG")
+
+
+# --- key derivation ---------------------------------------------------
+
+
+def test_preview_key_uses_sha256_when_set(tmp_path):
+    photo = _photo("a.jpg", sha256="deadbeef" * 8)
+    assert _preview_key(tmp_path, photo) == "deadbeef" * 8
+
+
+def test_preview_key_falls_back_to_content_key(tmp_path):
+    src = tmp_path / "a.jpg"
+    _save_jpeg(src, size=(100, 80))
+    photo = _photo("a.jpg", sha256=None)
+    assert _preview_key(tmp_path, photo) == _content_key(src)
+
+
+# --- generation ---------------------------------------------------------
+
+
+def test_preview_generated_at_expected_path(tmp_path):
+    src = tmp_path / "photo.jpg"
+    _save_jpeg(src, size=(3000, 2000))
+    photo = _photo("photo.jpg", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    expected = tmp_path / ".culler" / "previews" / f"{_content_key(src)}.jpg"
+    assert result == expected
+    assert result.exists()
+    with Image.open(result) as img:
+        assert img.format == "JPEG"
+        assert max(img.size) <= previews.MAX_DIMENSION
+
+
+def test_preview_keyed_by_sha256_when_present(tmp_path):
+    src = tmp_path / "photo.jpg"
+    _save_jpeg(src, size=(500, 400))
+    sha = "abc123" * 10 + "abcd"
+    photo = _photo("photo.jpg", sha256=sha)
+
+    result = preview_path(tmp_path, photo)
+
+    assert result == tmp_path / ".culler" / "previews" / f"{sha}.jpg"
+    assert result.exists()
+
+
+def test_second_call_does_not_regenerate(tmp_path, monkeypatch):
+    src = tmp_path / "photo.jpg"
+    _save_jpeg(src, size=(500, 400))
+    photo = _photo("photo.jpg", sha256=None)
+
+    calls = []
+    original = previews._generate_image_preview
+
+    def counting(*args, **kwargs):
+        calls.append(1)
+        return original(*args, **kwargs)
+
+    monkeypatch.setattr(previews, "_generate_image_preview", counting)
+
+    first = preview_path(tmp_path, photo)
+    second = preview_path(tmp_path, photo)
+
+    assert first == second
+    assert len(calls) == 1
+
+
+def test_no_upscale_of_small_image(tmp_path):
+    src = tmp_path / "small.jpg"
+    _save_jpeg(src, size=(50, 30))
+    photo = _photo("small.jpg", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    with Image.open(result) as img:
+        assert img.size == (50, 30)
+
+
+def test_orientation_applied(tmp_path):
+    src = tmp_path / "rotated.jpg"
+    # store landscape pixel data (200x100) but flag orientation=6
+    # (rotate 270 CW / display swaps width & height).
+    img = Image.new("RGB", (200, 100), color=(1, 2, 3))
+    exif = img.getexif()
+    exif[274] = 6  # Orientation tag
+    buf = io.BytesIO()
+    img.save(buf, "JPEG", exif=exif.tobytes())
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(buf.getvalue())
+
+    photo = _photo("rotated.jpg", sha256=None)
+    result = preview_path(tmp_path, photo)
+
+    with Image.open(result) as out:
+        assert out.size == (100, 200)
+
+
+def test_rgba_png_converts_to_rgb(tmp_path):
+    src = tmp_path / "alpha.png"
+    _save_png(src, size=(300, 200), mode="RGBA")
+    photo = _photo("alpha.png", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    with Image.open(result) as img:
+        assert img.mode == "RGB"
+        assert img.format == "JPEG"
+
+
+# --- placeholder fallbacks ------------------------------------------------
+
+
+def test_raw_extension_returns_placeholder(tmp_path):
+    src = tmp_path / "photo.cr2"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"not a real raw file")
+    photo = _photo("photo.cr2", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    assert result.name == "_placeholder.jpg"
+    with Image.open(result) as img:
+        assert img.size[0] == 2048
+
+
+def test_video_extension_returns_placeholder(tmp_path):
+    src = tmp_path / "clip.mov"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"not a real video")
+    photo = _photo("clip.mov", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    assert result.name == "_placeholder.jpg"
+
+
+def test_missing_file_returns_placeholder(tmp_path):
+    photo = _photo("does-not-exist.jpg", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    assert result.name == "_placeholder.jpg"
+    assert result.exists()
+
+
+def test_missing_file_with_sha256_returns_placeholder(tmp_path):
+    photo = _photo("does-not-exist.jpg", sha256="ff" * 32)
+
+    result = preview_path(tmp_path, photo)
+
+    # key resolves from sha256 (no stat needed) but source open fails.
+    assert result.name == "_placeholder.jpg"
+
+
+def test_corrupt_file_returns_placeholder(tmp_path):
+    src = tmp_path / "corrupt.jpg"
+    src.parent.mkdir(parents=True, exist_ok=True)
+    src.write_bytes(b"this is definitely not a jpeg" * 10)
+    photo = _photo("corrupt.jpg", sha256=None)
+
+    result = preview_path(tmp_path, photo)
+
+    assert result.name == "_placeholder.jpg"
+    # no stray partial file left behind under the content key
+    key = _content_key(src)
+    assert not (tmp_path / ".culler" / "previews" / f"{key}.jpg").exists()
+
+
+def test_placeholder_generated_once(tmp_path):
+    src1 = tmp_path / "a.cr2"
+    src2 = tmp_path / "b.cr2"
+    for s in (src1, src2):
+        s.write_bytes(b"raw")
+
+    p1 = preview_path(tmp_path, _photo("a.cr2", sha256=None))
+    mtime1 = p1.stat().st_mtime
+    p2 = preview_path(tmp_path, _photo("b.cr2", sha256=None))
+    mtime2 = p2.stat().st_mtime
+
+    assert p1 == p2
+    assert mtime1 == mtime2
+
+
+# --- view -----------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_preview_view_returns_jpeg_with_cache_headers(client):
+    src = settings.WORKING_FOLDER / "view-photo.jpg"
+    _save_jpeg(src, size=(400, 300))
+    photo = _db_photo("view-photo.jpg")
+
+    response = client.get(reverse("preview", args=[photo.pk]))
+
+    assert response.status_code == 200
+    assert response["Content-Type"] == "image/jpeg"
+    assert response["Cache-Control"] == "public, max-age=31536000, immutable"
+    content = b"".join(response.streaming_content)
+    assert content[:2] == b"\xff\xd8"  # JPEG magic bytes
+
+
+@pytest.mark.django_db
+def test_preview_view_404_for_unknown_pk(client):
+    response = client.get(reverse("preview", args=[999999]))
+    assert response.status_code == 404

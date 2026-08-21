@@ -5,4 +5,5 @@ from culler.core import views
 urlpatterns = [
     path("healthz", views.healthz, name="healthz"),
     path("", views.home, name="home"),
+    path("preview/<int:pk>", views.preview, name="preview"),
 ]
