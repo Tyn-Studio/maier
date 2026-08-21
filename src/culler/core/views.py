@@ -9,7 +9,7 @@ from django.http import FileResponse, HttpResponse, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from . import moves, previews, queries
+from . import phaseb, previews, queries
 from .models import Photo
 
 PAGE_SIZE = 200
@@ -38,8 +38,14 @@ def grid(request):
     paginator = Paginator(photos_qs, PAGE_SIZE)
     page = paginator.get_page(filters.get("page") or 1)
 
+    dupe_counts = phaseb.duplicate_counts()
+    page_photos = list(page.object_list)
+    for photo in page_photos:
+        photo.dupe_count = dupe_counts.get(photo.sha256, 0)
+
     context = {
-        "day_groups": queries.group_by_day(list(page.object_list)),
+        "day_groups": queries.group_by_day(page_photos),
+        "dupe_counts": dupe_counts,
         "page": page,
         "querystring": queries.querystring_without_page(filters),
         "provenances": queries.distinct_provenances(),
@@ -70,6 +76,8 @@ def review(request, pk):
     photos_by_pk = {p.pk: p for p in Photo.objects.filter(pk__in=filmstrip_pks)}
     filmstrip = [photos_by_pk[fpk] for fpk in filmstrip_pks if fpk in photos_by_pk]
 
+    dupe_count = phaseb.duplicate_counts().get(photo.sha256, 0) if photo.sha256 else 0
+
     context = {
         "photo": photo,
         "prev_id": prev_id,
@@ -78,6 +86,7 @@ def review(request, pk):
         "qs": filters.urlencode(),
         "index": idx,
         "total": len(ordered_pks),
+        "dupe_count": dupe_count,
     }
     return render(request, "review.html", context)
 
@@ -92,7 +101,7 @@ def set_status(request, pk):
     qs = request.POST.get("qs", "")
 
     try:
-        photo = moves.apply_status(settings.WORKING_FOLDER, photo, new_status)
+        photo = phaseb.apply_status_to_group(settings.WORKING_FOLDER, photo, new_status)
     except ValueError:
         return HttpResponse("invalid status", status=400)
     except FileNotFoundError:
@@ -107,6 +116,7 @@ def set_status(request, pk):
         response["HX-Redirect"] = url
         return response
 
+    photo.dupe_count = phaseb.duplicate_counts().get(photo.sha256, 0) if photo.sha256 else 0
     return render(request, "_grid_cell.html", {"photo": photo, "querystring": qs})
 
 

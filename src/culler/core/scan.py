@@ -139,6 +139,14 @@ def scan(folder: Path, progress: ScanProgress) -> None:
                 progress.done += 1
 
         _reconcile_missing(existing, seen_paths, new_by_key)
+
+        # Kick off Phase B (SHA-256 + exact-dupe grouping) after a
+        # successful Phase A pass. Imported inline to avoid a module cycle
+        # (phaseb.py itself has no need to import scan.py, but this keeps
+        # the dependency direction explicit and one-way).
+        from . import phaseb
+
+        phaseb.start_phase_b(folder)
     finally:
         progress.finished = True
 

@@ -12,14 +12,18 @@ from typing import Any
 from django.db.models import QuerySet
 from django.http import QueryDict
 
+from . import phaseb
 from .models import Photo
 
 
 def filtered_photos(params: QueryDict | dict[str, Any]) -> QuerySet[Photo]:
     """captured_at-ascending queryset, missing excluded, with optional
     status / provenance / capture-date-range filters from a GET querydict.
+    Exact-dupe groups (SPEC §8) are collapsed to their representative --
+    redundant copies never appear in the grid/filmstrip/navigation order.
     """
     qs = Photo.objects.filter(missing=False).order_by("captured_at", "pk")
+    qs = qs.exclude(pk__in=phaseb.non_representative_pks())
 
     status = params.get("status")
     if status:

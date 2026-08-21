@@ -55,6 +55,10 @@
       <dd>{{ photo.relative_path }}</dd>
       <dt>Status</dt>
       <dd>{{ photo.get_status_display }}</dd>
+      {% if dupe_count > 1 %}
+      <dt>Duplicates</dt>
+      <dd>{{ dupe_count }} copies</dd>
+      {% endif %}
     </dl>
   </aside>
 </div>

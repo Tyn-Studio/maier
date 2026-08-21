@@ -3,6 +3,9 @@
     <img loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
   </a>
   <span class="badge badge-{{ photo.status }}">{{ photo.get_status_display }}</span>
+  {% if photo.dupe_count > 1 %}
+  <span class="badge badge-dupe">&times;{{ photo.dupe_count }}</span>
+  {% endif %}
   <div class="cell-actions" hx-target="#cell-{{ photo.pk }}" hx-swap="outerHTML">
     <input type="hidden" name="qs" value="{{ querystring }}">
     <button type="button" data-action="select" hx-post="{% url 'set-status' photo.pk %}" hx-include="closest .cell-actions" hx-vals='{"status": "selected", "context": "grid"}'>P</button>

@@ -1,3 +1,4 @@
+import shutil
 from datetime import UTC, datetime
 
 import pytest
@@ -7,6 +8,9 @@ from django.urls import reverse
 from culler.core import scan as scan_module
 from culler.core import views as views_module
 from culler.core.models import Photo
+from culler.core.phaseb import PhaseBProgress, run_phase_b
+from culler.core.scan import ScanProgress, scan
+from fixtures import build_fixture_folder
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 
@@ -214,6 +218,76 @@ def test_set_status_vanished_file_returns_409(client):
     response = client.post(reverse("set-status", args=[photo.pk]), {"status": "selected"})
 
     assert response.status_code == 409
+
+
+# --- exact-dupe grouping (T7): grid hiding, badge, group cull -------------
+
+
+@pytest.mark.django_db
+def test_grid_hides_non_representative_and_shows_dupe_badge(client):
+    unique = "t_phaseb_grid_dupe"
+    sha = "1" * 64
+    rep = _db_photo(
+        f"{unique}/rep.jpg",
+        provenance=unique,
+        sha256=sha,
+        captured_at=datetime(2025, 6, 14, 10, 0, tzinfo=UTC),
+    )
+    other = _db_photo(
+        f"{unique}/other.jpg",
+        provenance=unique,
+        sha256=sha,
+        captured_at=datetime(2025, 6, 14, 10, 5, tzinfo=UTC),
+    )
+
+    response = client.get(reverse("grid"), {"provenance": unique})
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert reverse("preview", args=[rep.pk]) in body
+    assert reverse("preview", args=[other.pk]) not in body
+    assert "&times;2" in body
+
+
+@pytest.mark.django_db
+def test_set_status_select_representative_auto_rejects_dupe_copy(client):
+    unique = "t_phaseb_set_status_dupe"
+    build_fixture_folder(settings.WORKING_FOLDER, {f"{unique}/rep.jpg": None})
+    shutil.copy(
+        settings.WORKING_FOLDER / f"{unique}/rep.jpg",
+        settings.WORKING_FOLDER / f"{unique}/other.jpg",
+    )
+    scan(settings.WORKING_FOLDER, ScanProgress())
+    Photo.objects.filter(relative_path__startswith=f"{unique}/").update(sha256=None)
+    run_phase_b(settings.WORKING_FOLDER, PhaseBProgress())
+
+    rep = Photo.objects.get(relative_path=f"{unique}/rep.jpg")
+    other = Photo.objects.get(relative_path=f"{unique}/other.jpg")
+    assert rep.sha256 == other.sha256
+
+    response = client.post(
+        reverse("set-status", args=[rep.pk]),
+        {"status": "selected", "context": "grid"},
+    )
+    assert response.status_code == 200
+
+    assert (settings.WORKING_FOLDER / f"selected/{unique}/rep.jpg").exists()
+    other.refresh_from_db()
+    assert other.status == Photo.STATUS_REJECTED
+    assert (settings.WORKING_FOLDER / f"rejected/{unique}/other.jpg").exists()
+
+    # unflag the representative: it's restored, the copy stays rejected --
+    # SPEC §17.3, redundant copies are never auto-restored.
+    response = client.post(
+        reverse("set-status", args=[rep.pk]),
+        {"status": "optional", "context": "grid"},
+    )
+    assert response.status_code == 200
+    assert (settings.WORKING_FOLDER / f"{unique}/rep.jpg").exists()
+
+    other.refresh_from_db()
+    assert other.status == Photo.STATUS_REJECTED
+    assert (settings.WORKING_FOLDER / f"rejected/{unique}/other.jpg").exists()
 
 
 # --- scan-status / rescan --------------------------------------------------

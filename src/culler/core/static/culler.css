@@ -161,6 +161,14 @@ main {
   color: var(--red);
 }
 
+.badge-dupe {
+  top: auto;
+  bottom: 0.35rem;
+  left: 0.35rem;
+  color: var(--accent);
+  font-weight: 600;
+}
+
 .cell-actions {
   position: absolute;
   bottom: 0.35rem;
