@@ -8,8 +8,8 @@ description = "Local-first, folder-centric photo culling app: the filesystem is 
 readme = "README.md"
 requires-python = ">=3.14"
 keywords = ["photo", "culling", "photography", "raw", "lightroom", "desktop"]
-# TODO(license): add the license table/classifier once the license is chosen
-# (SPEC §17.2). Do not add a LICENSE file before that decision either.
+license = "MIT"
+license-files = ["LICENSE"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Environment :: Web Environment",

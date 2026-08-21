@@ -143,7 +143,4 @@ implementation status.
 
 ## License
 
-<!-- TODO(license): not yet decided (SPEC §17.2) -- add a LICENSE file and
-     the corresponding pyproject classifier/license table once it is. -->
-Not yet chosen. Do not treat this repository as under any particular license
-until this section is updated.
+MIT — see [LICENSE](LICENSE).
