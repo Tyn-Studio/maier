@@ -63,6 +63,8 @@ def grid(request):
         photo.dupe_count = dupe_counts.get(photo.sha256, 0)
         photo.is_live = bool(photo.live_photo_video_path)
 
+    scan_progress = _in_flight_scan_progress()
+
     context = {
         "day_groups": queries.group_by_day(page_photos),
         "dupe_counts": dupe_counts,
@@ -73,9 +75,13 @@ def grid(request):
         "filter_provenance": filters.get("provenance", ""),
         "filter_from": filters.get("from", ""),
         "filter_to": filters.get("to", ""),
+        "filter_dates_low": filters.get("dates") == "low",
         "unresolved_pair_count": phaseb.unresolved_pair_count(),
         "missing_count": queries.missing_photo_count(),
         "show_missing": filters.get("show") == "missing",
+        "total_photo_count": queries.total_photo_count(),
+        "scanning": scan_progress is not None,
+        "scan_progress": scan_progress,
     }
     template = "_grid_items.html" if request.headers.get("HX-Request") else "grid.html"
     return render(request, template, context)
@@ -158,6 +164,11 @@ def _in_flight_scan_progress():
 
 
 def scan_status(request):
+    """One step of the banner's recursive load-polling (`_scan_banner.html`):
+    an in-flight scan renders a live poller div whose "load delay:2s"
+    trigger schedules the next request; an idle scan renders an inert div
+    and the chain ends -- no stop-polling status code needed.
+    """
     from .scan import start_background_scan
 
     progress = _in_flight_scan_progress()
@@ -167,6 +178,7 @@ def scan_status(request):
         # own start_background_scan call, e.g. tests hitting the view
         # directly) still gets indexed.
         progress = start_background_scan(settings.WORKING_FOLDER)
+
     return render(request, "_scan_banner.html", {"progress": progress})
 
 
@@ -178,6 +190,21 @@ def rescan(request):
 
     progress = start_background_scan(settings.WORKING_FOLDER)
     return render(request, "_scan_banner.html", {"progress": progress})
+
+
+def summary(request):
+    """Folder audit screen (SPEC §10): counts by status/provenance, total
+    `selected/` size, unresolved-dupe/missing counts, recent activity.
+    """
+    context = {
+        "counts_by_status": queries.counts_by_status(),
+        "provenance_rows": queries.counts_by_provenance_status(),
+        "selected_size": queries.human_size(queries.selected_size_bytes()),
+        "unresolved_pair_count": phaseb.unresolved_pair_count(),
+        "missing_count": queries.missing_photo_count(),
+        "recent_activity": queries.recent_activity(),
+    }
+    return render(request, "summary.html", context)
 
 
 def dupes(request):

@@ -14,4 +14,5 @@ urlpatterns = [
     path("stream/<int:pk>", views.stream, name="stream"),
     path("dupes", views.dupes, name="dupes"),
     path("dupes/<int:pair_id>/resolve", views.resolve_pair, name="resolve-pair"),
+    path("summary", views.summary, name="summary"),
 ]

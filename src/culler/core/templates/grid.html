@@ -1,8 +1,8 @@
 {% extends "base.html" %}
 {% block page_name %}grid{% endblock %}
 {% block content %}
-<div id="scan-banner" hx-get="{% url 'scan-status' %}" hx-trigger="load, every 2s" hx-swap="innerHTML">
-  {% include "_scan_banner.html" %}
+<div id="scan-banner">
+  {% include "_scan_banner.html" with progress=scan_progress %}
 </div>
 
 <div id="filter-bar" class="filter-bar"
@@ -29,7 +29,12 @@
   </label>
   <label>From <input type="date" name="from" value="{{ filter_from }}"></label>
   <label>To <input type="date" name="to" value="{{ filter_to }}"></label>
-  <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-banner" hx-swap="innerHTML">Rescan</button>
+  <label class="filter-checkbox">
+    <input type="checkbox" name="dates" value="low" {% if filter_dates_low %}checked{% endif %}>
+    Low-confidence dates
+  </label>
+  <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-poller" hx-swap="outerHTML">Rescan</button>
+  <a class="summary-link" href="{% url 'summary' %}">Summary</a>
   {% if unresolved_pair_count %}
   <a class="dupes-badge" href="{% url 'dupes' %}">Dupes ({{ unresolved_pair_count }})</a>
   {% endif %}

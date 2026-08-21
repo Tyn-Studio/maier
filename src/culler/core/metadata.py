@@ -1,22 +1,45 @@
 """Capture-date fallback chain (SPEC §9): EXIF -> filename -> file mtime.
 
-Pillow only in M1 (exiftool absent, per PLAN decisions log / SPEC §12): must
-degrade gracefully on unreadable/corrupt images, never raise.
+Pillow handles JPEG/HEIC/PNG/TIFF directly (fast, no subprocess). RAW and
+video extensions aren't readable by Pillow's EXIF path, so for those we try
+exiftool first (T13, SPEC §6 Phase A "via exiftool") when it's detected on
+this machine; any failure (absent, timeout, unparseable output) falls
+through to the existing Pillow/filename/mtime chain unchanged -- exiftool
+must never be a hard dependency (CLAUDE.md rule 6).
 """
 
 from __future__ import annotations
 
 import re
+import subprocess
 from datetime import UTC, datetime
 from pathlib import Path
 
 from PIL import ExifTags, Image
+
+from . import exiftool as exiftool_module
 
 _EXIF_DATETIME_ORIGINAL = 36867  # Exif IFD
 _EXIF_DATETIME = 306  # 0th IFD fallback
 
 _MIN_YEAR = 1990
 _MAX_YEAR = 2100
+
+# Redefined here rather than imported from scan.py: scan.py imports
+# capture_datetime from this module, so importing scan.py back would be
+# circular. Kept in sync manually with scan.py's IMAGE_EXTENSIONS/
+# VIDEO_EXTENSIONS -- flagging as a known duplication (T13 brief allowed
+# either "import ... or redefine locally, flag which").
+_RAW_EXTENSIONS = {".dng", ".cr2", ".cr3", ".nef", ".arw", ".raf", ".orf", ".rw2"}
+_VIDEO_EXTENSIONS = {".mov", ".mp4", ".m4v", ".avi"}
+_EXIFTOOL_ONLY_EXTENSIONS = _RAW_EXTENSIONS | _VIDEO_EXTENSIONS
+
+_EXIFTOOL_TIMEOUT_SECONDS = 10
+
+# named tuple (not an inline literal) to sidestep a ruff 0.16.4 formatter bug
+# that strips the parens from `except (A, B, C):` when it fits on one line
+# (see exiftool.py/previews.py for the same workaround).
+_EXIFTOOL_SUBPROCESS_ERRORS = (OSError, subprocess.TimeoutExpired)
 
 # Conservative filename timestamp patterns, tried in order. Matched with
 # `search` (not `fullmatch`) so prefixes like IMG_/PXL_ and suffixes like
@@ -30,6 +53,11 @@ _FILENAME_PATTERNS = [
 
 
 def capture_datetime(path: Path) -> tuple[datetime, str]:
+    if path.suffix.lower() in _EXIFTOOL_ONLY_EXTENSIONS:
+        dt = _from_exiftool(path)
+        if dt is not None:
+            return dt, "exif"
+
     dt = _from_exif(path)
     if dt is not None:
         return dt, "exif"
@@ -39,6 +67,52 @@ def capture_datetime(path: Path) -> tuple[datetime, str]:
         return dt, "filename"
 
     return _from_mtime(path), "file_mtime"
+
+
+def _from_exiftool(path: Path) -> datetime | None:
+    """RAW/video capture date via exiftool (no -stay_open batching -- one
+    process per file; flagged as future perf work, see PLAN T13 brief).
+    Tries -DateTimeOriginal / -CreateDate / -MediaCreateDate in that order
+    (`-s3` prints bare values, one per requested tag, empty line when a tag
+    is absent) and parses the first non-empty line. Never raises.
+    """
+    exiftool_path = exiftool_module.find_exiftool()
+    if exiftool_path is None:
+        return None
+
+    try:
+        result = subprocess.run(
+            [
+                str(exiftool_path),
+                "-s3",
+                "-d",
+                "%Y:%m:%d %H:%M:%S",
+                "-DateTimeOriginal",
+                "-CreateDate",
+                "-MediaCreateDate",
+                str(path),
+            ],
+            capture_output=True,
+            timeout=_EXIFTOOL_TIMEOUT_SECONDS,
+            text=True,
+        )
+    except _EXIFTOOL_SUBPROCESS_ERRORS:
+        return None
+
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            naive = datetime.strptime(line, "%Y:%m:%d %H:%M:%S")
+        except ValueError:
+            return None
+        return naive.astimezone(UTC)
+
+    return None
 
 
 def _from_exif(path: Path) -> datetime | None:

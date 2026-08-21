@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block page_name %}summary{% endblock %}
+{% block content %}
+<div class="summary-header">
+  <a class="back-link" href="{% url 'grid' %}">&larr; Back to grid</a>
+  <h1>Summary</h1>
+</div>
+
+<div class="summary-cards">
+  <div class="summary-card">
+    <h2>By status</h2>
+    <dl>
+      <dt>Optional</dt><dd>{{ counts_by_status.optional }}</dd>
+      <dt>Selected</dt><dd>{{ counts_by_status.selected }}</dd>
+      <dt>Rejected</dt><dd>{{ counts_by_status.rejected }}</dd>
+    </dl>
+  </div>
+
+  <div class="summary-card">
+    <h2>Selected size</h2>
+    <p class="summary-big-number">{{ selected_size }}</p>
+  </div>
+
+  <div class="summary-card">
+    <h2>Review</h2>
+    <dl>
+      <dt>Unresolved duplicates</dt><dd>{{ unresolved_pair_count }}</dd>
+      <dt>Missing files</dt><dd>{{ missing_count }}</dd>
+    </dl>
+  </div>
+</div>
+
+<div class="summary-section">
+  <h2>By provenance</h2>
+  {% if provenance_rows %}
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>Provenance</th>
+        <th>Optional</th>
+        <th>Selected</th>
+        <th>Rejected</th>
+        <th>Total</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for row in provenance_rows %}
+      <tr>
+        <td>{{ row.provenance }}</td>
+        <td>{{ row.optional }}</td>
+        <td>{{ row.selected }}</td>
+        <td>{{ row.rejected }}</td>
+        <td>{{ row.total }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty-state">No photos indexed yet.</p>
+  {% endif %}
+</div>
+
+<div class="summary-section">
+  <h2>Recent activity</h2>
+  {% if recent_activity %}
+  <table class="summary-table">
+    <thead>
+      <tr>
+        <th>Status</th>
+        <th>Path</th>
+        <th>Changed</th>
+      </tr>
+    </thead>
+    <tbody>
+      {% for photo in recent_activity %}
+      <tr>
+        <td><span class="status-pill status-pill-{{ photo.status }}">{{ photo.get_status_display }}</span></td>
+        <td><a href="{% url 'review' photo.pk %}">{{ photo.relative_path }}</a></td>
+        <td>{{ photo.status_changed_at }}</td>
+      </tr>
+      {% endfor %}
+    </tbody>
+  </table>
+  {% else %}
+  <p class="empty-state">No activity yet.</p>
+  {% endif %}
+</div>
+{% endblock %}

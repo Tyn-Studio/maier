@@ -7,7 +7,15 @@
 </div>
 {% endfor %}
 {% if not day_groups %}
-<p class="empty-state">No photos match these filters.</p>
+  {% if total_photo_count == 0 %}
+    {% if scanning %}
+    <p class="empty-state">Indexing your photos&hellip;</p>
+    {% else %}
+    <p class="empty-state">No photos found in this folder.</p>
+    {% endif %}
+  {% else %}
+  <p class="empty-state">No photos match these filters.</p>
+  {% endif %}
 {% endif %}
 {% if page.has_next %}
 <div class="sentinel"

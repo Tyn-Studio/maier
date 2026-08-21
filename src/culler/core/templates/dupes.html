@@ -10,7 +10,9 @@
 <div class="dupes-pair" data-pair-id="{{ pair.pk }}">
   <div class="dupes-side">
     <h3>Left</h3>
-    <img class="dupes-image" src="{% url 'preview' pair.photo_a.pk %}" alt="">
+    <div class="dupes-image-wrap" onclick="this.classList.toggle('zoomed')">
+      <img class="dupes-image" src="{% url 'preview' pair.photo_a.pk %}" alt="">
+    </div>
     <dl>
       <dt>Captured</dt><dd>{{ pair.photo_a.captured_at }}</dd>
       <dt>Path</dt><dd>{{ pair.photo_a.relative_path }}</dd>
@@ -37,7 +39,9 @@
 
   <div class="dupes-side">
     <h3>Right</h3>
-    <img class="dupes-image" src="{% url 'preview' pair.photo_b.pk %}" alt="">
+    <div class="dupes-image-wrap" onclick="this.classList.toggle('zoomed')">
+      <img class="dupes-image" src="{% url 'preview' pair.photo_b.pk %}" alt="">
+    </div>
     <dl>
       <dt>Captured</dt><dd>{{ pair.photo_b.captured_at }}</dd>
       <dt>Path</dt><dd>{{ pair.photo_b.relative_path }}</dd>

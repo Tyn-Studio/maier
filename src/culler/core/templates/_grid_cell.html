@@ -15,6 +15,9 @@
   {% if photo.dupe_count > 1 %}
   <span class="badge badge-dupe">&times;{{ photo.dupe_count }}</span>
   {% endif %}
+  {% if photo.captured_at_source != "exif" %}
+  <span class="warn-glyph" title="Low-confidence date ({{ photo.captured_at_source }})">&#9888;</span>
+  {% endif %}
   {% if photo.missing %}
   <div class="cell-note">file is missing</div>
   {% else %}

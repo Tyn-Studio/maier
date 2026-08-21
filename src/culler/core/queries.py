@@ -9,7 +9,7 @@ from datetime import UTC, date, datetime, time
 from itertools import groupby
 from typing import Any
 
-from django.db.models import QuerySet
+from django.db.models import Count, QuerySet, Sum
 from django.http import QueryDict
 
 from . import phaseb
@@ -48,6 +48,9 @@ def filtered_photos(params: QueryDict | dict[str, Any]) -> QuerySet[Photo]:
     to_date = _parse_date(params.get("to"))
     if to_date is not None:
         qs = qs.filter(captured_at__lte=_day_end(to_date))
+
+    if params.get("dates") == "low":
+        qs = qs.exclude(captured_at_source="exif")
 
     return qs
 
@@ -101,3 +104,73 @@ def querystring_without_page(params: QueryDict) -> str:
     qd = params.copy()
     qd.pop("page", None)
     return qd.urlencode()
+
+
+def total_photo_count() -> int:
+    """Unfiltered row count, used by the grid to distinguish "genuinely
+    empty folder" / "still indexing" from "filters matched nothing" (T13
+    empty-state item).
+    """
+    return Photo.objects.count()
+
+
+# --- Summary screen (SPEC §10) ---------------------------------------------
+
+
+def counts_by_status() -> dict[str, int]:
+    """All photos (missing included -- the summary is an audit view), one
+    key per status choice so callers never need `.get(..., 0)`.
+    """
+    qs = Photo.objects.values_list("status").annotate(n=Count("id")).values_list("status", "n")
+    rows = dict(qs)
+    return {choice: rows.get(choice, 0) for choice, _label in Photo.STATUS_CHOICES}
+
+
+def counts_by_provenance_status() -> list[dict[str, Any]]:
+    """Provenance x status matrix, one row per provenance (root files under
+    the empty-string provenance shown as "(root)"), sorted by provenance
+    name.
+    """
+    rows = Photo.objects.values("provenance", "status").annotate(n=Count("id"))
+    table: dict[str, dict[str, int]] = {}
+    for row in rows:
+        table.setdefault(row["provenance"], {})[row["status"]] = row["n"]
+
+    result = []
+    for provenance in sorted(table):
+        counts = table[provenance]
+        by_status = {choice: counts.get(choice, 0) for choice, _label in Photo.STATUS_CHOICES}
+        result.append(
+            {
+                "provenance": provenance or "(root)",
+                **by_status,
+                "total": sum(by_status.values()),
+            }
+        )
+    return result
+
+
+def selected_size_bytes() -> int:
+    total = Photo.objects.filter(status=Photo.STATUS_SELECTED).aggregate(total=Sum("file_size"))[
+        "total"
+    ]
+    return total or 0
+
+
+def human_size(num_bytes: int) -> str:
+    """Binary (1024-based) GB/MB/KB formatting for the summary screen."""
+    size = float(num_bytes)
+    for unit in ("bytes", "KB", "MB", "GB", "TB"):
+        if size < 1024 or unit == "TB":
+            if unit == "bytes":
+                return f"{int(size)} {unit}"
+            return f"{size:.2f} {unit}"
+        size /= 1024
+    return f"{int(size)} bytes"  # unreachable, satisfies static analysis
+
+
+def recent_activity(limit: int = 10) -> list[Photo]:
+    """The `limit` most recently status-changed photos, newest first."""
+    return list(
+        Photo.objects.exclude(status_changed_at__isnull=True).order_by("-status_changed_at")[:limit]
+    )

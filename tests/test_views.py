@@ -518,13 +518,34 @@ def test_grid_hides_dupes_badge_when_no_unresolved_pairs(client):
 
 
 @pytest.mark.django_db
-def test_scan_status_returns_200(client):
+def test_scan_status_idle_renders_inert_div(client):
     # A row already exists, so scan_status won't auto-start a real
     # background scan of the (shared, cross-test) working folder here.
+    # Idle -> the response div carries NO hx attributes, ending the
+    # recursive load-polling chain (T13 item 7).
     _db_photo("t_scan_status/a.jpg")
 
     response = client.get(reverse("scan-status"))
+
+    body = response.content.decode()
     assert response.status_code == 200
+    assert 'id="scan-poller"' in body
+    assert "hx-get" not in body
+
+
+@pytest.mark.django_db
+def test_scan_status_in_flight_renders_live_poller(client, monkeypatch):
+    _db_photo("t_scan_status_in_flight/a.jpg")
+    in_flight = scan_module.ScanProgress(total=10, done=3, finished=False)
+    monkeypatch.setattr(views_module, "_in_flight_scan_progress", lambda: in_flight)
+
+    response = client.get(reverse("scan-status"))
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "Indexing 3 / 10" in body
+    assert 'id="scan-poller"' in body
+    assert "load delay:2s" in body  # schedules the next poll
 
 
 @pytest.mark.django_db
@@ -557,6 +578,26 @@ def test_rescan_calls_start_background_scan(client, monkeypatch):
 
     assert response.status_code == 200
     assert calls == [settings.WORKING_FOLDER]
+
+
+@pytest.mark.django_db
+def test_rescan_response_contains_fresh_polling_div(client, monkeypatch):
+    """T13 item 7: the rescan response must re-render the polling div (not
+    just its contents) so a freshly-created #scan-poller element gets its
+    own hx-trigger registration and polling resumes after a manual rescan.
+    """
+
+    def _fake_start(folder):
+        return scan_module.ScanProgress(total=5, done=1, finished=False)
+
+    monkeypatch.setattr(scan_module, "start_background_scan", _fake_start)
+
+    response = client.post(reverse("rescan"))
+
+    body = response.content.decode()
+    assert 'id="scan-poller"' in body
+    assert "hx-trigger" in body
+    assert "Indexing 1 / 5" in body
 
 
 # --- review -----------------------------------------------------------
@@ -794,4 +835,188 @@ def test_review_missing_photo_renders_metadata_and_hides_actions(client):
     assert "file is missing" in body
     assert 'id="action-select"' not in body
     assert 'id="action-reject"' not in body
+
+
+# --- low-confidence date filter + glyph (T13 item 2) -----------------------
+
+
+@pytest.mark.django_db
+def test_grid_dates_low_filter_excludes_exif_sourced_photos(client):
+    unique = "t_t13_dates_low"
+    exif_dated = _db_photo(f"{unique}/exif.jpg", provenance=unique, captured_at_source="exif")
+    low_trust = _db_photo(
+        f"{unique}/mtime.jpg",
+        provenance=unique,
+        captured_at_source="file_mtime",
+        captured_at=datetime(2025, 6, 14, 11, 0, tzinfo=UTC),
+    )
+
+    response = client.get(reverse("grid"), {"provenance": unique, "dates": "low"})
+
+    body = response.content.decode()
+    assert reverse("preview", args=[low_trust.pk]) in body
+    assert reverse("preview", args=[exif_dated.pk]) not in body
+
+
+@pytest.mark.django_db
+def test_grid_shows_warn_glyph_for_low_confidence_dates(client):
+    unique = "t_t13_grid_warn_glyph"
+    _db_photo(f"{unique}/mtime.jpg", provenance=unique, captured_at_source="file_mtime")
+
+    response = client.get(reverse("grid"), {"provenance": unique})
+
+    assert "warn-glyph" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_grid_no_warn_glyph_for_exif_dates(client):
+    unique = "t_t13_grid_no_warn_glyph"
+    _db_photo(f"{unique}/exif.jpg", provenance=unique, captured_at_source="exif")
+
+    response = client.get(reverse("grid"), {"provenance": unique})
+
+    assert "warn-glyph" not in response.content.decode()
+
+
+# --- empty states (T13 item 6) ---------------------------------------------
+
+
+@pytest.mark.django_db
+def test_grid_empty_folder_shows_no_photos_found(client, monkeypatch):
+    monkeypatch.setattr(views_module, "_in_flight_scan_progress", lambda: None)
+
+    response = client.get(reverse("grid"), {"provenance": "t_t13_empty_folder_never_used"})
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "No photos found in this folder." in body
+
+
+@pytest.mark.django_db
+def test_grid_empty_db_while_scanning_shows_indexing_message(client, monkeypatch):
+    in_flight = scan_module.ScanProgress(total=100, done=1, finished=False)
+    monkeypatch.setattr(views_module, "_in_flight_scan_progress", lambda: in_flight)
+
+    response = client.get(reverse("grid"), {"provenance": "t_t13_scanning_empty_db"})
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "Indexing your photos" in body
+
+
+@pytest.mark.django_db
+def test_grid_filters_exclude_everything_shows_no_match_message(client):
+    _db_photo("t_t13_no_match/a.jpg", provenance="t_t13_no_match")
+
+    response = client.get(reverse("grid"), {"provenance": "t_t13_no_match_missing_provenance"})
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "No photos match these filters." in body
+
+
+@pytest.mark.django_db
+def test_review_empty_db_unknown_pk_returns_404_not_500(client):
+    response = client.get(reverse("review", args=[999999]))
+    assert response.status_code == 404
+
+
+@pytest.mark.django_db
+def test_dupes_empty_db_returns_200_not_500(client):
+    response = client.get(reverse("dupes"))
+    assert response.status_code == 200
+
+
+# --- summary screen (T13 item 1) --------------------------------------------
+
+
+@pytest.mark.django_db
+def test_summary_empty_db_returns_200_not_500(client):
+    response = client.get(reverse("summary"))
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "No photos indexed yet." in body
+    assert "No activity yet." in body
+
+
+@pytest.mark.django_db
+def test_summary_shows_counts_by_status_and_provenance(client):
+    unique = "t_t13_summary"
+    _db_photo(f"{unique}/a.jpg", provenance=unique, status=Photo.STATUS_OPTIONAL)
+    _db_photo(
+        f"{unique}/selected/b.jpg",
+        provenance=unique,
+        status=Photo.STATUS_SELECTED,
+        file_size=2_000_000,
+    )
+    _db_photo(f"{unique}/rejected/c.jpg", provenance=unique, status=Photo.STATUS_REJECTED)
+
+    response = client.get(reverse("summary"))
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert unique in body
+    assert "MB" in body  # selected size, human-formatted
+
+
+@pytest.mark.django_db
+def test_summary_shows_recent_activity(client):
+    photo = _db_photo(
+        "t_t13_summary_activity/a.jpg",
+        status=Photo.STATUS_SELECTED,
+        status_changed_at=datetime(2025, 6, 14, 12, 0, tzinfo=UTC),
+    )
+
+    response = client.get(reverse("summary"))
+
+    body = response.content.decode()
+    assert photo.relative_path in body
+
+
+@pytest.mark.django_db
+def test_summary_shows_unresolved_dupes_and_missing_counts(client):
+    left = _db_photo("t_t13_summary_dupes/left.jpg", provenance="t_t13_summary_dupes")
+    right = _db_photo(
+        "t_t13_summary_dupes/right.jpg",
+        provenance="t_t13_summary_dupes",
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=3)
+    _db_photo("t_t13_summary_missing/gone.jpg", provenance="t_t13_summary_missing", missing=True)
+
+    response = client.get(reverse("summary"))
+
+    body = response.content.decode()
+    assert "<dt>Unresolved duplicates</dt><dd>1</dd>" in body
+    assert "<dt>Missing files</dt><dd>1</dd>" in body
+
+
+@pytest.mark.django_db
+def test_grid_summary_link_present(client):
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert reverse("summary") in body
+
+
+# --- dupes zoom (T13 item 4) ------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_dupes_images_wrapped_for_zoom_toggle(client):
+    unique = "t_t13_dupes_zoom"
+    left = _db_photo(f"{unique}/left.jpg", provenance=unique)
+    right = _db_photo(
+        f"{unique}/right.jpg",
+        provenance=unique,
+        captured_at=datetime(2025, 6, 14, 10, 0, 3, tzinfo=UTC),
+    )
+    DuplicatePair.objects.create(photo_a=left, photo_b=right, hamming_distance=4)
+
+    response = client.get(reverse("dupes"))
+
+    body = response.content.decode()
+    assert "dupes-image-wrap" in body
+    assert "onclick" in body
     assert 'id="action-undecide"' not in body

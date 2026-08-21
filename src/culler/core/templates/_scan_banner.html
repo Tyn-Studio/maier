@@ -1,7 +1,13 @@
+{# Recursive load-polling: while a scan runs, each response re-renders this
+   div and its "load delay:2s" trigger schedules the next poll. When idle,
+   the div is inert (no hx attributes) and the chain simply ends -- restarted
+   by the rescan button, whose response swaps a live poller back in. #}
 {% if progress and not progress.finished %}
-<div class="banner indexing">
-  Indexing {{ progress.done }} / {{ progress.total }}{% if progress.errors %} ({{ progress.errors|length }} errors){% endif %}
+<div id="scan-poller" hx-get="{% url 'scan-status' %}" hx-trigger="load delay:2s" hx-target="this" hx-swap="outerHTML">
+  <div class="banner indexing">
+    Indexing {{ progress.done }} / {{ progress.total }}{% if progress.errors %} ({{ progress.errors|length }} errors){% endif %}
+  </div>
 </div>
 {% else %}
-<div class="banner hidden"></div>
+<div id="scan-poller"><div class="banner hidden"></div></div>
 {% endif %}
