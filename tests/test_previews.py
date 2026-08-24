@@ -9,7 +9,7 @@ from PIL import Image
 
 from maier.core import exiftool as exiftool_module
 from maier.core import previews
-from maier.core.models import Photo
+from maier.core.models import Photo, Source, sentinel_for_source
 from maier.core.previews import _content_key, _preview_key, preview_path, remote_preview_dest
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
@@ -395,3 +395,44 @@ def test_remote_preview_never_hits_network_when_uncached(tmp_path, monkeypatch):
 def test_remote_preview_dest_path_matches_pull_naming_scheme(tmp_path):
     dest = remote_preview_dest(tmp_path, "Luis@Example.com", "abc123")
     assert dest == tmp_path / ".maier" / "previews" / "icloud-luis-example-com-abc123.jpg"
+
+
+# --- registered sources (SPEC §19, T28 -- M6 first wave) --------------------
+
+
+@pytest.mark.django_db
+def test_preview_generated_for_source_photo(tmp_path):
+    # T28 flagged fix: preview_path/_preview_key used `folder /
+    # photo.relative_path`, bogus for an `@src/...` sentinel row -- this
+    # exercises the `absolute_path_for` routing (real file, real source root).
+    library = tmp_path / "library"
+    library.mkdir()
+    source_dir = tmp_path / "external"
+    source_dir.mkdir()
+    source = Source.objects.create(kind=Source.KIND_LOCAL, name="external", path=str(source_dir))
+
+    src = source_dir / "img.jpg"
+    _save_jpeg(src, size=(3000, 2000))
+
+    photo = Photo(
+        relative_path=sentinel_for_source(source, "img.jpg"),
+        sha256=None,
+        source_ref=source,
+    )
+
+    result = preview_path(library, photo)
+
+    assert result == library / ".maier" / "previews" / f"{_content_key(src)}.jpg"
+    assert result.exists()
+    with Image.open(result) as img:
+        assert img.format == "JPEG"
+
+
+def test_preview_path_source_row_missing_source_ref_falls_back_to_placeholder(tmp_path):
+    library = tmp_path / "library"
+    library.mkdir()
+    photo = Photo(relative_path="@src/999/img.jpg", sha256=None, source_ref=None)
+
+    result = preview_path(library, photo)
+
+    assert result == previews._placeholder_path(library)

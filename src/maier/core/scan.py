@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import os
 import threading
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -14,7 +15,7 @@ from django.db import connection
 
 from . import moves
 from .metadata import capture_datetime
-from .models import Photo
+from .models import Photo, Source, rel_from_source_sentinel, sentinel_for_source
 
 IMAGE_EXTENSIONS = {
     ".jpg",
@@ -100,7 +101,14 @@ def scan(folder: Path, progress: ScanProgress) -> None:
         # SPEC §18: remote (iCloud) rows have no local file -- exclude them
         # from the walk/reconciliation map so they're never marked missing
         # or reconciled against a coincidentally same-sized/mtimed local file.
-        existing = {p.relative_path: p for p in Photo.objects.filter(source=Photo.SOURCE_LOCAL)}
+        # T28: source-indexed rows (source_ref set) are also excluded here --
+        # they're walked/reconciled per-root in `_scan_source` below so a row
+        # from one root never reconciles against a file in another root or
+        # the library root (brief requirement: per-root scoping).
+        existing = {
+            p.relative_path: p
+            for p in Photo.objects.filter(source=Photo.SOURCE_LOCAL, source_ref__isnull=True)
+        }
         seen_paths: set[str] = set()
         # (size, mtime) -> [relative_path, ...] for files with no pre-existing
         # DB row, seen during this scan -- reconciliation candidates.
@@ -149,7 +157,20 @@ def scan(folder: Path, progress: ScanProgress) -> None:
             finally:
                 progress.done += 1
 
-        _reconcile_missing(folder, existing, seen_paths, new_by_key)
+        _reconcile_missing(
+            lambda rel: folder / rel,
+            existing,
+            seen_paths,
+            new_by_key,
+            status_provenance_fn=lambda rel: _status_and_provenance(Path(rel)),
+        )
+
+        # T28 (M6 first wave): after the library-root walk, index every
+        # registered local source. Backward-compatible: with no Source rows
+        # (the current single-folder world, and every pre-existing test),
+        # this is a no-op -- `progress.total`/`.done` are unaffected.
+        for source in Source.objects.filter(kind=Source.KIND_LOCAL).order_by("pk"):
+            _scan_source(source, progress)
 
         # Kick off Phase B (SHA-256 + exact-dupe grouping) after a
         # successful Phase A pass. Imported inline to avoid a module cycle
@@ -162,16 +183,21 @@ def scan(folder: Path, progress: ScanProgress) -> None:
         progress.finished = True
 
 
-def _find_hash_match(folder: Path, sha256: str, candidates: list[str]) -> str | None:
+def _find_hash_match(
+    to_abspath: Callable[[str], Path], sha256: str, candidates: list[str]
+) -> str | None:
     """First candidate (by path, sorted -- deterministic when several match,
     which can only happen for byte-identical files) whose content hashes to
     `sha256`. `phaseb._sha256_file` is reused rather than duplicated here.
+    `to_abspath` resolves a candidate's DB-stored path to its real file (a
+    plain `folder / rel` for the library root, or a source-root join for a
+    registered source -- T28 generalization, see `_scan_source`).
     """
     from .phaseb import _sha256_file
 
     for rel in sorted(candidates):
         try:
-            if _sha256_file(folder / rel) == sha256:
+            if _sha256_file(to_abspath(rel)) == sha256:
                 return rel
         except OSError:
             continue
@@ -179,16 +205,23 @@ def _find_hash_match(folder: Path, sha256: str, candidates: list[str]) -> str | 
 
 
 def _reconcile_missing(
-    folder: Path,
+    to_abspath: Callable[[str], Path],
     existing: dict[str, Photo],
     seen_paths: set[str],
     new_by_key: dict[tuple[int, float], list[str]],
+    status_provenance_fn: Callable[[str], tuple[str, str]] | None = None,
 ) -> None:
     """A vanished indexed path re-links to a candidate "new" path with an
     identical (size, mtime) -- hash-confirmed when the vanished row already
     has a sha256 (SPEC §6). Without a sha256, falls back to the simple
     single-candidate rule (ambiguous multi-candidate cases go `missing`;
     the next Phase B run's hashing lets a later rescan disambiguate them).
+
+    `status_provenance_fn`, when given, recomputes status/provenance from
+    the new path on relink (the library root's location-derived rule). When
+    omitted (source-indexed rows, T28), the relinked row keeps its existing
+    status/provenance -- source status comes from the sidecar decisions, not
+    location, so there's nothing to recompute from a bare path.
     """
     for rel_str, photo in existing.items():
         if rel_str in seen_paths:
@@ -202,7 +235,7 @@ def _reconcile_missing(
             continue
 
         if photo.sha256:
-            new_rel = _find_hash_match(folder, photo.sha256, candidates)
+            new_rel = _find_hash_match(to_abspath, photo.sha256, candidates)
             if new_rel is None:
                 Photo.objects.filter(pk=photo.pk).update(missing=True)
                 continue
@@ -216,22 +249,108 @@ def _reconcile_missing(
         if new_photo is None:
             Photo.objects.filter(pk=photo.pk).update(missing=True)
             continue
-        status, provenance = _status_and_provenance(Path(new_rel))
         # Drop the placeholder row created for the "new" path this scan,
         # then re-link the original row (keeps id, sha256, captured_at).
         new_photo.delete()
-        Photo.objects.filter(pk=photo.pk).update(
-            relative_path=new_rel,
-            status=status,
-            provenance=provenance,
-            missing=False,
-        )
+        if status_provenance_fn is not None:
+            status, provenance = status_provenance_fn(new_rel)
+            Photo.objects.filter(pk=photo.pk).update(
+                relative_path=new_rel,
+                status=status,
+                provenance=provenance,
+                missing=False,
+            )
+        else:
+            Photo.objects.filter(pk=photo.pk).update(relative_path=new_rel, missing=False)
         # Consume just this candidate: a second vanished row with the same
         # (size, mtime) key can still be resolved against whatever remains
         # (hash-disambiguated, or fall through to missing).
         candidates.remove(new_rel)
         if not candidates:
             del new_by_key[key]
+
+
+def _scan_source(source: Source, progress: ScanProgress) -> None:
+    """T28 (M6 first wave): index one registered local source.
+
+    A source has no status folders (SPEC §19 -- adoption of legacy
+    `selected/`/`rejected/` trees inside a source is a LATER task); it's
+    walked as plain subdirectories with the same extension/hidden filters as
+    the library root, and status comes from the per-source sidecar decisions
+    (`sources.load_source_state`), defaulting to "optional" -- never from
+    location. Missing-marking + (size, mtime)/hash reconciliation is scoped
+    to just this source's existing rows (`source_ref=source`), never the
+    library root or another source (per-root isolation, brief requirement).
+    """
+    from . import sources as sources_module
+
+    source_path = Path(source.path)
+    if not source_path.is_dir():
+        progress.errors.append(f"source {source.name!r}: path missing or not a directory")
+        return
+
+    candidates = _walk_candidates(source_path)
+    progress.total += len(candidates)
+
+    state = sources_module.load_source_state(source)
+
+    existing = {p.relative_path: p for p in Photo.objects.filter(source_ref=source)}
+    seen_paths: set[str] = set()
+    new_by_key: dict[tuple[int, float], list[str]] = {}
+
+    for rel_path in candidates:
+        rel_str = rel_path.as_posix()
+        sentinel = sentinel_for_source(source, rel_str)
+        seen_paths.add(sentinel)
+        try:
+            abspath = source_path / rel_path
+            st = abspath.stat()
+            size = st.st_size
+            mtime = st.st_mtime
+            status = state.decisions.get(rel_str, Photo.STATUS_OPTIONAL)
+
+            existing_photo = existing.get(sentinel)
+            if (
+                existing_photo is not None
+                and not existing_photo.missing
+                and existing_photo.file_size == size
+                and abs(existing_photo.file_mtime - mtime) < _MTIME_TOLERANCE
+                and existing_photo.status == status
+            ):
+                continue  # unchanged (incl. sidecar decision), skip re-read
+
+            media_type = _media_type(rel_path)
+            captured_at, captured_at_source = capture_datetime(abspath)
+
+            Photo.objects.update_or_create(
+                relative_path=sentinel,
+                defaults={
+                    "status": status,
+                    "provenance": source.name,
+                    "file_size": size,
+                    "file_mtime": mtime,
+                    "media_type": media_type,
+                    "captured_at": captured_at,
+                    "captured_at_source": captured_at_source,
+                    "missing": False,
+                    "source": Photo.SOURCE_LOCAL,
+                    "source_ref": source,
+                },
+            )
+
+            if existing_photo is None:
+                new_by_key.setdefault((size, mtime), []).append(sentinel)
+        except Exception as exc:  # per-file errors never abort the scan
+            progress.errors.append(f"{source.name}/{rel_path}: {exc}")
+        finally:
+            progress.done += 1
+
+    _reconcile_missing(
+        lambda sentinel, source_path=source_path: source_path / rel_from_source_sentinel(sentinel),
+        existing,
+        seen_paths,
+        new_by_key,
+    )
 
 
 _scan_state_lock = threading.Lock()

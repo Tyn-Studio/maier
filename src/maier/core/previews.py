@@ -10,7 +10,7 @@ from pathlib import Path
 from PIL import Image, ImageOps, UnidentifiedImageError
 
 from . import exiftool as exiftool_module
-from .models import Photo
+from .models import Photo, absolute_path_for
 from .remote_state import _slug as _account_slug
 
 try:
@@ -35,6 +35,10 @@ _CONTENT_KEY_CHUNK = 65536  # first 64KiB
 # named tuple (not an inline literal) to sidestep a ruff 0.16.4 formatter bug
 # that strips the parens from `except (A, B, C):` when it fits on one line.
 _PREVIEW_GENERATION_ERRORS = (OSError, UnidentifiedImageError, ValueError)
+# T28 (flagged): `_preview_key`/`preview_path` can now raise ValueError (via
+# `absolute_path_for`) for an unresolvable `@src/...` row, in addition to the
+# pre-existing OSError from a bad stat -- both fall back to the placeholder.
+_PREVIEW_KEY_ERRORS = (OSError, ValueError)
 
 
 def _previews_dir(folder: Path) -> Path:
@@ -60,7 +64,12 @@ def _content_key(src: Path) -> str:
 def _preview_key(folder: Path, photo: Photo) -> str:
     if photo.sha256:
         return photo.sha256
-    src = folder / photo.relative_path
+    # T28 (flagged, minimal edit): was `folder / photo.relative_path`, which
+    # builds a bogus path for `@src/...` source rows -- route through
+    # `absolute_path_for` so it resolves against the photo's actual source
+    # root instead. May raise ValueError for an unresolvable row; caller
+    # catches it via `_PREVIEW_KEY_ERRORS`.
+    src = absolute_path_for(photo, folder)
     return _content_key(src)
 
 
@@ -151,7 +160,14 @@ def preview_path(folder: Path, photo: Photo) -> Path:
         dest = remote_preview_dest(folder, photo.account, photo.remote_id or "")
         return dest if dest.exists() else _placeholder_path(folder)
 
-    src = folder / photo.relative_path
+    # T28 (flagged, minimal edit): was `folder / photo.relative_path`, which
+    # builds a bogus path for `@src/...` source rows -- route through
+    # `absolute_path_for` so this resolves against the photo's actual source
+    # root instead of the library folder.
+    try:
+        src = absolute_path_for(photo, folder)
+    except ValueError:
+        return _placeholder_path(folder)
 
     if _is_video(src):
         return _placeholder_path(folder)
@@ -161,7 +177,7 @@ def preview_path(folder: Path, photo: Photo) -> Path:
 
     try:
         key = _preview_key(folder, photo)
-    except OSError:
+    except _PREVIEW_KEY_ERRORS:
         return _placeholder_path(folder)
 
     dest = _previews_dir(folder) / f"{key}.jpg"
@@ -189,7 +205,7 @@ def _raw_preview_path(folder: Path, photo: Photo, src: Path) -> Path:
 
     try:
         key = _preview_key(folder, photo)
-    except OSError:
+    except _PREVIEW_KEY_ERRORS:
         return _placeholder_path(folder)
 
     dest = _previews_dir(folder) / f"{key}.jpg"

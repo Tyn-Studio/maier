@@ -9,9 +9,16 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
+from fixtures import build_fixture_folder
 from maier.core import scan as scan_module
-from maier.core.models import Photo
+from maier.core.models import Photo, Source, absolute_path_for, sentinel_for_source
 from maier.core.scan import ScanProgress, scan, start_background_scan
+from maier.core.sources import (
+    SourceState,
+    add_local_source,
+    record_decision,
+    save_source_state,
+)
 
 
 def _make_jpeg(path: Path, mtime: float | None = None) -> None:
@@ -425,3 +432,223 @@ def test_scan_never_marks_remote_rows_missing(tmp_path):
     progress = ScanProgress()
     scan(tmp_path, progress)
     assert progress.total == len(EXPECTED_PATHS)
+
+
+# --- multi-root: registered local sources (SPEC §19, T28 -- M6 first wave) -
+
+
+@pytest.mark.django_db
+def test_scan_backward_compatible_with_no_sources_registered(tmp_path):
+    # Headline acceptance requirement: with zero Source rows (today's
+    # single-folder world), scan() behaves exactly as before.
+    _build_tree(tmp_path)
+    progress = ScanProgress()
+
+    scan(tmp_path, progress)
+
+    assert progress.total == progress.done == len(EXPECTED_PATHS)
+    assert set(Photo.objects.values_list("relative_path", flat=True)) == EXPECTED_PATHS
+    assert Source.objects.count() == 0
+
+
+@pytest.mark.django_db
+def test_scan_indexes_registered_source(tmp_path):
+    library = tmp_path / "library"
+    library.mkdir()
+    # Fixture tree built OUTSIDE the library root, per brief.
+    source_root = tmp_path / "external-source"
+    build_fixture_folder(
+        source_root,
+        {
+            "IMG_0001.jpg": None,
+            "sub/IMG_0002.jpg": None,
+            "notes.txt": {"junk": True},
+        },
+    )
+    source = add_local_source(library, source_root, name="external")
+
+    progress = ScanProgress()
+    scan(library, progress)
+
+    assert progress.finished is True
+    assert progress.errors == []
+
+    row1 = Photo.objects.get(relative_path=sentinel_for_source(source, "IMG_0001.jpg"))
+    row2 = Photo.objects.get(relative_path=sentinel_for_source(source, "sub/IMG_0002.jpg"))
+
+    assert row1.source_ref_id == source.pk
+    assert row1.provenance == "external"
+    assert row1.status == Photo.STATUS_OPTIONAL
+    assert row1.media_type == Photo.MEDIA_IMAGE
+    assert row1.missing is False
+    assert absolute_path_for(row1, library) == source_root / "IMG_0001.jpg"
+
+    assert row2.source_ref_id == source.pk
+    assert row2.provenance == "external"
+    assert row2.status == Photo.STATUS_OPTIONAL
+
+    # Junk file never indexed; library root untouched (no local files there).
+    assert Photo.objects.filter(source_ref__isnull=True).count() == 0
+    assert Photo.objects.filter(source_ref=source).count() == 2
+
+
+@pytest.mark.django_db
+def test_scan_applies_sidecar_decisions(tmp_path):
+    library = tmp_path / "library"
+    library.mkdir()
+    source_root = tmp_path / "external-source"
+    build_fixture_folder(source_root, {"IMG_0001.jpg": None, "IMG_0002.jpg": None})
+    source = add_local_source(library, source_root, name="external")
+
+    save_source_state(
+        source,
+        SourceState(decisions={"IMG_0001.jpg": "selected", "IMG_0002.jpg": "rejected"}),
+    )
+
+    scan(library, ScanProgress())
+
+    selected = Photo.objects.get(relative_path=sentinel_for_source(source, "IMG_0001.jpg"))
+    rejected = Photo.objects.get(relative_path=sentinel_for_source(source, "IMG_0002.jpg"))
+    assert selected.status == Photo.STATUS_SELECTED
+    assert rejected.status == Photo.STATUS_REJECTED
+
+
+@pytest.mark.django_db
+def test_rescan_picks_up_changed_sidecar_decision(tmp_path):
+    # A rescan must re-apply a sidecar decision even though the underlying
+    # file's (size, mtime) hasn't changed -- decisions come from the
+    # sidecar, not the filesystem, so the unchanged-file skip must still
+    # notice a decision change.
+    library = tmp_path / "library"
+    library.mkdir()
+    source_root = tmp_path / "external-source"
+    build_fixture_folder(source_root, {"IMG_0001.jpg": None})
+    source = add_local_source(library, source_root, name="external")
+
+    scan(library, ScanProgress())
+    sentinel = sentinel_for_source(source, "IMG_0001.jpg")
+    assert Photo.objects.get(relative_path=sentinel).status == Photo.STATUS_OPTIONAL
+
+    record_decision(source, "IMG_0001.jpg", "rejected")
+    scan(library, ScanProgress())
+
+    assert Photo.objects.get(relative_path=sentinel).status == Photo.STATUS_REJECTED
+
+
+@pytest.mark.django_db
+def test_scan_source_legacy_status_dirs_walked_as_plain_subdirectories(tmp_path):
+    # SPEC §19 / brief: adoption of a source's pre-existing selected/rejected
+    # trees is a LATER task -- for now they're indexed as plain
+    # subdirectories, status coming only from the sidecar (default
+    # "optional"), never from the directory name.
+    library = tmp_path / "library"
+    library.mkdir()
+    source_root = tmp_path / "external-source"
+    build_fixture_folder(
+        source_root,
+        {"selected/IMG_0001.jpg": None, "rejected/IMG_0002.jpg": None},
+    )
+    source = add_local_source(library, source_root, name="external")
+
+    scan(library, ScanProgress())
+
+    row1 = Photo.objects.get(relative_path=sentinel_for_source(source, "selected/IMG_0001.jpg"))
+    row2 = Photo.objects.get(relative_path=sentinel_for_source(source, "rejected/IMG_0002.jpg"))
+    assert row1.status == Photo.STATUS_OPTIONAL
+    assert row1.provenance == "external"
+    assert row2.status == Photo.STATUS_OPTIONAL
+    assert row2.provenance == "external"
+
+
+@pytest.mark.django_db
+def test_scan_source_reconciliation_isolated_from_library_root(tmp_path):
+    # Two byte-identical, same-mtime "twins" -- one at the library root, one
+    # in a registered source -- both get moved to the same relative name
+    # ("moved/twin.jpg") within their own root in between scans. Per-root
+    # scoping must relink each to its own row; if the two roots' candidate
+    # pools were merged, both keys would collide (2 candidates for 1 slot)
+    # and BOTH rows would go ambiguous -> missing instead.
+    library = tmp_path / "library"
+    library.mkdir()
+    source_root = tmp_path / "external-source"
+    source_root.mkdir()
+
+    content = b"AAAA" * 200
+    mtime = 1_700_000_000.0
+
+    root_file = library / "twin.jpg"
+    _make_bytes(root_file, content, mtime)
+
+    source = add_local_source(library, source_root, name="external")
+    src_file = source_root / "twin.jpg"
+    _make_bytes(src_file, content, mtime)
+
+    scan(library, ScanProgress())
+
+    root_id = Photo.objects.get(relative_path="twin.jpg").id
+    source_sentinel = sentinel_for_source(source, "twin.jpg")
+    source_id = Photo.objects.get(relative_path=source_sentinel).id
+
+    (library / "moved").mkdir()
+    shutil.move(str(root_file), str(library / "moved" / "twin.jpg"))
+    (source_root / "moved").mkdir()
+    shutil.move(str(src_file), str(source_root / "moved" / "twin.jpg"))
+
+    scan(library, ScanProgress())
+
+    relinked_root = Photo.objects.get(relative_path="moved/twin.jpg")
+    relinked_source = Photo.objects.get(relative_path=sentinel_for_source(source, "moved/twin.jpg"))
+
+    assert relinked_root.id == root_id
+    assert relinked_source.id == source_id
+    assert relinked_root.missing is False
+    assert relinked_source.missing is False
+    assert not Photo.objects.filter(relative_path="twin.jpg").exists()
+    assert not Photo.objects.filter(relative_path=source_sentinel).exists()
+
+
+@pytest.mark.django_db
+def test_scan_source_missing_marking_scoped_per_root(tmp_path):
+    # Same filename, same content/mtime in both roots; deleting only the
+    # source's copy must not mark the library-root copy missing.
+    library = tmp_path / "library"
+    library.mkdir()
+    source_root = tmp_path / "external-source"
+    source_root.mkdir()
+
+    content = b"BBBB" * 200
+    mtime = 1_700_000_001.0
+
+    root_file = library / "same.jpg"
+    _make_bytes(root_file, content, mtime)
+
+    source = add_local_source(library, source_root, name="external")
+    src_file = source_root / "same.jpg"
+    _make_bytes(src_file, content, mtime)
+
+    scan(library, ScanProgress())
+    src_file.unlink()
+    scan(library, ScanProgress())
+
+    root_photo = Photo.objects.get(relative_path="same.jpg")
+    source_photo = Photo.objects.get(relative_path=sentinel_for_source(source, "same.jpg"))
+
+    assert root_photo.missing is False
+    assert source_photo.missing is True
+
+
+@pytest.mark.django_db
+def test_scan_source_missing_path_is_a_per_file_error_not_a_crash(tmp_path):
+    library = tmp_path / "library"
+    library.mkdir()
+    source_root = tmp_path / "external-source"
+    source_root.mkdir()
+    add_local_source(library, source_root, name="external")
+    # Simulate the source root itself vanishing after registration.
+    source_root.rmdir()
+
+    progress = ScanProgress()
+    scan(library, progress)
+
+    assert progress.finished is True
+    assert any("external" in e for e in progress.errors)

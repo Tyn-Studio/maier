@@ -1,5 +1,35 @@
+from pathlib import Path, PurePosixPath
+
 from django.db import models
 from django.db.models import Q
+
+
+class Source(models.Model):
+    """A registered library source (SPEC §19, M6 first wave). Not yet wired
+    into views/culling -- this is the data model + indexing plumbing only;
+    the app still boots single-folder (MAIER_FOLDER) for every existing code
+    path. `Photo.source_ref` points here for rows indexed from a source.
+    """
+
+    KIND_LOCAL = "local"
+    KIND_ICLOUD = "icloud"
+    KIND_CHOICES = [
+        (KIND_LOCAL, "Local"),
+        (KIND_ICLOUD, "iCloud"),
+    ]
+
+    kind = models.CharField(max_length=8, choices=KIND_CHOICES)
+    # display name / provenance tag; unique so it can double as a stable
+    # human-readable label (folder basename, de-duped, or account email).
+    name = models.CharField(max_length=255, unique=True)
+    # absolute path for kind="local"; "" for kind="icloud" (no local root).
+    path = models.CharField(max_length=4096, blank=True, default="")
+    # Apple-ID email for kind="icloud"; "" for kind="local".
+    account = models.CharField(max_length=255, blank=True, default="")
+    added_at = models.DateTimeField(auto_now_add=True)
+
+    def __str__(self) -> str:
+        return self.name
 
 
 class Photo(models.Model):
@@ -78,6 +108,17 @@ class Photo(models.Model):
     # a pull populates it; falls back to f"{remote_id}.jpg" if still empty.
     remote_filename = models.CharField(max_length=255, blank=True, default="")
 
+    # T28 (M6 first wave): registered-source rows carry this FK; legacy rows
+    # (indexed from the library root, the current single-folder world) are
+    # source_ref=None -- deliberately nullable so every existing row/test
+    # keeps working untouched. Rows with source_ref set use the sentinel
+    # relative_path f"@src/{source_ref.pk}/{rel-within-source}" (mirrors the
+    # existing "@icloud/..." sentinel pattern) since relative_path must stay
+    # globally unique across the whole library, not just within one source.
+    source_ref = models.ForeignKey(
+        Source, null=True, blank=True, on_delete=models.SET_NULL, related_name="photos"
+    )
+
     class Meta:
         ordering = ["captured_at"]
         constraints = [
@@ -104,3 +145,51 @@ class DuplicatePair(models.Model):
 
     def __str__(self) -> str:
         return f"{self.photo_a_id} <-> {self.photo_b_id} (d={self.hamming_distance})"
+
+
+# T28 (M6 first wave): sentinel prefix for source-indexed rows' relative_path
+# (mirrors the existing "@icloud/..." sentinel used for remote rows).
+SOURCE_SENTINEL_PREFIX = "@src/"
+
+
+def sentinel_for_source(source: Source, rel: str) -> str:
+    """`@src/{source.pk}/{rel}` -- the globally-unique relative_path stored
+    for a row indexed from a registered source. Single implementation shared
+    by `core/scan.py` (writes it) and `core/sources.py`/callers (parse it).
+    """
+    return f"{SOURCE_SENTINEL_PREFIX}{source.pk}/{rel}"
+
+
+def rel_from_source_sentinel(sentinel: str) -> str:
+    """Inverse of `sentinel_for_source`: the path within the source. Returns
+    "" if `sentinel` isn't a well-formed `@src/...` sentinel.
+    """
+    if not sentinel.startswith(SOURCE_SENTINEL_PREFIX):
+        return ""
+    parts = sentinel.split("/", 2)
+    return parts[2] if len(parts) > 2 else ""
+
+
+def absolute_path_for(photo: Photo, library: Path) -> Path:
+    """Resolve `photo`'s real filesystem location (T28 brief -- later tasks
+    route previews/streaming/culling through this instead of hard-coding
+    `library / photo.relative_path`).
+
+    - Library-root rows (relative_path is a plain path, no sentinel):
+      `library / photo.relative_path`, same as every existing code path.
+    - `@src/{pk}/{rel}` rows: `Path(photo.source_ref.path) / rel`. Raises
+      ValueError if `source_ref` is missing (e.g. the Source row was deleted
+      -- `on_delete=SET_NULL` leaves an orphaned sentinel path behind).
+    - `@icloud/...` rows: always raises ValueError -- remote rows have no
+      local file until selection converts them to an ordinary local row
+      (SPEC §18, CLAUDE.md hard rule 9).
+    """
+    rel = photo.relative_path
+    if rel.startswith("@icloud/"):
+        raise ValueError(f"iCloud row has no local file: {rel}")
+    if rel.startswith(SOURCE_SENTINEL_PREFIX):
+        if photo.source_ref_id is None:
+            raise ValueError(f"source row missing source_ref: {rel}")
+        rel_in_source = rel_from_source_sentinel(rel)
+        return Path(photo.source_ref.path) / PurePosixPath(rel_in_source)
+    return Path(library) / rel

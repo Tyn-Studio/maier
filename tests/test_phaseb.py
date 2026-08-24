@@ -36,6 +36,7 @@ from maier.core.phaseb import (
     start_phase_b,
 )
 from maier.core.scan import ScanProgress, scan
+from maier.core.sources import add_local_source
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 
@@ -887,3 +888,29 @@ def test_duplicate_counts_and_representatives_ignore_remote_rows(tmp_path):
 def test_live_photo_companion_paths_ignores_remote_rows(tmp_path):
     _remote_photo("r1")
     assert live_photo_companion_paths() == set()
+
+
+# --- registered sources (SPEC §19, T28 -- M6 first wave) --------------------
+
+
+@pytest.mark.django_db
+def test_run_phase_b_hashes_source_photos(tmp_path):
+    # T28 flagged fix: _hash_pending used to build `folder / relative_path`,
+    # which is bogus for an `@src/...` sentinel row -- this exercises the
+    # `absolute_path_for` routing end to end via a real scan + phase B run.
+    library = tmp_path / "library"
+    library.mkdir()
+    source_root = tmp_path / "external-source"
+    build_fixture_folder(source_root, {"a.jpg": {"size": (6, 4)}})
+    source = add_local_source(library, source_root, name="external")
+
+    scan(library, ScanProgress())
+    Photo.objects.update(sha256=None, phash=None)
+
+    progress = PhaseBProgress()
+    run_phase_b(library, progress)
+
+    assert progress.errors == []
+    row = Photo.objects.get(source_ref=source)
+    assert row.sha256 == _real_sha256(source_root / "a.jpg")
+    assert row.phash

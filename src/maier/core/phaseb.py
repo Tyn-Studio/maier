@@ -25,7 +25,7 @@ from PIL import Image, UnidentifiedImageError
 
 from . import moves
 from . import previews as previews_module
-from .models import DuplicatePair, Photo
+from .models import DuplicatePair, Photo, absolute_path_for
 
 _HASH_CHUNK = 1024 * 1024  # 1 MiB, per brief
 
@@ -67,10 +67,15 @@ def _hash_pending(folder: Path, progress: PhaseBProgress) -> None:
         # SPEC §18: remote (iCloud) rows have no local file to hash -- their
         # sha256 stays NULL forever; excluding them here avoids re-queueing
         # (and erroring on) the same sentinel path every Phase B run.
+        # T28 (flagged, minimal edit): `select_related("source_ref")` +
+        # full Photo instances (was `values_list("pk", "relative_path")`) --
+        # `@src/...` rows need `absolute_path_for` below, which takes a
+        # Photo, not a bare path string; `folder / relative_path` would
+        # build a bogus path for those sentinel rows.
         pending = list(
             Photo.objects.filter(sha256__isnull=True, missing=False)
             .exclude(source=Photo.SOURCE_ICLOUD)
-            .values_list("pk", "relative_path")
+            .select_related("source_ref")
         )
     except Exception as exc:
         # Transient DB contention (e.g. a scan's own transaction still open)
@@ -81,9 +86,18 @@ def _hash_pending(folder: Path, progress: PhaseBProgress) -> None:
 
     progress.total = len(pending)
 
-    for pk, rel_path in pending:
+    for photo in pending:
+        rel_path = photo.relative_path
         try:
-            abspath = folder / rel_path
+            # T28 (flagged): resolve via absolute_path_for instead of the
+            # old `folder / rel_path` -- correct for both library-root rows
+            # and `@src/...` source rows. Unresolvable rows (e.g. an
+            # orphaned sentinel whose Source was deleted) are skipped, not
+            # errored -- there's truly no file to hash.
+            try:
+                abspath = absolute_path_for(photo, folder)
+            except ValueError:
+                continue
             if not abspath.exists():
                 # Vanished between being queued and hashed -- record and move
                 # on; the next Phase A scan will mark it missing.
@@ -91,7 +105,7 @@ def _hash_pending(folder: Path, progress: PhaseBProgress) -> None:
                 continue
             digest = _sha256_file(abspath)
             # Short, idempotent write -- re-running is always safe.
-            Photo.objects.filter(pk=pk).update(sha256=digest)
+            Photo.objects.filter(pk=photo.pk).update(sha256=digest)
         except Exception as exc:  # per-file errors never abort the run
             progress.errors.append(f"{rel_path}: {exc}")
         finally:
