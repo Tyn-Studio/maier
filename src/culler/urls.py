@@ -15,4 +15,9 @@ urlpatterns = [
     path("dupes", views.dupes, name="dupes"),
     path("dupes/<int:pair_id>/resolve", views.resolve_pair, name="resolve-pair"),
     path("summary", views.summary, name="summary"),
+    path("accounts", views.accounts, name="accounts"),
+    path("accounts/login", views.account_login, name="account-login"),
+    path("accounts/2fa", views.account_2fa, name="account-2fa"),
+    path("accounts/pull", views.account_pull, name="account-pull"),
+    path("pull-status", views.pull_status, name="pull-status"),
 ]

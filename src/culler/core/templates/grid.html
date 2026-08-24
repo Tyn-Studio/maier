@@ -35,6 +35,7 @@
   </label>
   <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-poller" hx-swap="outerHTML">Rescan</button>
   <a class="summary-link" href="{% url 'summary' %}">Summary</a>
+  <a class="accounts-link" href="{% url 'accounts' %}">Accounts</a>
   {% if unresolved_pair_count %}
   <a class="dupes-badge" href="{% url 'dupes' %}">Dupes ({{ unresolved_pair_count }})</a>
   {% endif %}

@@ -6,11 +6,13 @@ from django.conf import settings
 from django.urls import reverse
 
 from culler.core import downloads as downloads_module
+from culler.core import pull as pull_module
 from culler.core import remote_state
 from culler.core import scan as scan_module
 from culler.core import views as views_module
 from culler.core.models import DuplicatePair, Photo
 from culler.core.phaseb import PhaseBProgress, run_phase_b
+from culler.core.pull import PullProgress
 from culler.core.scan import ScanProgress, scan
 from fixtures import build_fixture_folder
 
@@ -1168,3 +1170,354 @@ def test_dupes_images_wrapped_for_zoom_toggle(client):
     assert "dupes-image-wrap" in body
     assert "onclick" in body
     assert 'id="action-undecide"' not in body
+
+
+# --- accounts screen (T18, SPEC §18) ----------------------------------------
+
+
+class _NoNetworkICloudClient:
+    """Fake for the views-module test seam (T18 brief): raises if the
+    accounts list page ever tries to construct a real client, guarding the
+    "never touch the network just to render this page" requirement.
+    """
+
+    @classmethod
+    def login(cls, email, password):
+        raise AssertionError("accounts() must not construct an ICloudClient")
+
+    @classmethod
+    def from_session(cls, email):
+        raise AssertionError("accounts() must not construct an ICloudClient")
+
+
+@pytest.fixture(autouse=True)
+def _t18_reset_pending_2fa():
+    """`views_module._pending_2fa` is a module-global dict (single-user
+    localhost app, per its own docstring) -- clear any stray entry a test
+    left behind so it can't leak into an unrelated later test.
+    """
+    views_module._pending_2fa.clear()
+    yield
+    views_module._pending_2fa.clear()
+
+
+@pytest.mark.django_db
+def test_t18_accounts_lists_accounts_from_state_files_without_network(client, monkeypatch):
+    monkeypatch.setattr(views_module, "ICloudClient", _NoNetworkICloudClient)
+    email = "t_t18_list@example.com"
+    remote_state.save_state(
+        settings.WORKING_FOLDER, remote_state.AccountState(account=email, cursor=_CAPTURED)
+    )
+
+    response = client.get(reverse("accounts"))
+
+    assert response.status_code == 200
+    rows = response.context["accounts"]
+    row = next(r for r in rows if r["email"] == email)
+    assert row["last_pulled"] == _CAPTURED
+    assert row["slug"] == remote_state.account_slug(email)
+    assert "last pulled item" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_t18_accounts_shows_never_for_account_with_no_pull_yet(client, monkeypatch):
+    monkeypatch.setattr(views_module, "ICloudClient", _NoNetworkICloudClient)
+    email = "t_t18_never@example.com"
+    remote_state.save_state(settings.WORKING_FOLDER, remote_state.AccountState(account=email))
+
+    response = client.get(reverse("accounts"))
+
+    assert "never" in response.content.decode()
+    row = next(r for r in response.context["accounts"] if r["email"] == email)
+    assert row["last_pulled"] is None
+
+
+@pytest.mark.django_db
+def test_t18_accounts_shows_total_and_pending_counts(client, monkeypatch):
+    monkeypatch.setattr(views_module, "ICloudClient", _NoNetworkICloudClient)
+    email = "t_t18_counts@example.com"
+    remote_state.save_state(settings.WORKING_FOLDER, remote_state.AccountState(account=email))
+    _remote_db_photo("r_t18_counts_1", account=email)
+    _remote_db_photo(
+        "r_t18_counts_2",
+        account=email,
+        status=Photo.STATUS_SELECTED,
+        captured_at=_CAPTURED.replace(hour=20),
+    )
+
+    response = client.get(reverse("accounts"))
+
+    row = next(r for r in response.context["accounts"] if r["email"] == email)
+    assert row["total"] == 2
+    assert row["pending"] == 1
+
+
+# --- add-account form / 2FA --------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t18_account_login_success_creates_state_file_and_redirects(client, monkeypatch):
+    email = "t_t18_login_ok@example.com"
+
+    class _Client:
+        def __init__(self, account):
+            self.account = account
+
+        @classmethod
+        def login(cls, e, p):
+            return cls(e)
+
+    monkeypatch.setattr(views_module, "ICloudClient", _Client)
+
+    response = client.post(reverse("account-login"), {"email": email, "password": "hunter2"})
+
+    assert response.status_code == 302
+    assert response["Location"] == f"{reverse('accounts')}?added={email}"
+    assert email in remote_state.list_accounts(settings.WORKING_FOLDER)
+
+
+@pytest.mark.django_db
+def test_t18_account_login_two_factor_required_renders_form_and_stashes_client(client, monkeypatch):
+    email = "t_t18_login_2fa@example.com"
+
+    class _PendingClient:
+        def __init__(self, account):
+            self.account = account
+
+    pending = _PendingClient(email)
+
+    class _Client:
+        @classmethod
+        def login(cls, e, p):
+            raise views_module.TwoFactorRequired(pending)
+
+    monkeypatch.setattr(views_module, "ICloudClient", _Client)
+
+    response = client.post(reverse("account-login"), {"email": email, "password": "hunter2"})
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert email in body
+    assert 'name="code"' in body
+    assert views_module._pending_2fa[email] is pending
+    assert email not in remote_state.list_accounts(settings.WORKING_FOLDER)
+
+
+@pytest.mark.django_db
+def test_t18_account_login_icloud_error_shows_error_no_state_file(client, monkeypatch):
+    email = "t_t18_login_err@example.com"
+
+    class _Client:
+        @classmethod
+        def login(cls, e, p):
+            raise views_module.ICloudError("invalid credentials")
+
+    monkeypatch.setattr(views_module, "ICloudClient", _Client)
+
+    response = client.post(reverse("account-login"), {"email": email, "password": "bad"})
+
+    assert response.status_code == 200
+    assert "invalid credentials" in response.content.decode()
+    assert email not in remote_state.list_accounts(settings.WORKING_FOLDER)
+
+
+@pytest.mark.django_db
+def test_t18_account_2fa_success_creates_state_file_and_redirects(client):
+    email = "t_t18_2fa_ok@example.com"
+
+    class _Pending:
+        def __init__(self):
+            self.codes = []
+
+        def submit_2fa(self, code):
+            self.codes.append(code)
+            return True
+
+    pending = _Pending()
+    views_module._pending_2fa[email] = pending
+
+    response = client.post(reverse("account-2fa"), {"email": email, "code": "123456"})
+
+    assert response.status_code == 302
+    assert response["Location"] == f"{reverse('accounts')}?added={email}"
+    assert email in remote_state.list_accounts(settings.WORKING_FOLDER)
+    assert email not in views_module._pending_2fa
+    assert pending.codes == ["123456"]
+
+
+@pytest.mark.django_db
+def test_t18_account_2fa_wrong_code_rerenders_form_client_still_pending(client):
+    email = "t_t18_2fa_wrong@example.com"
+
+    class _Pending:
+        def submit_2fa(self, code):
+            return False
+
+    pending = _Pending()
+    views_module._pending_2fa[email] = pending
+
+    response = client.post(reverse("account-2fa"), {"email": email, "code": "000000"})
+
+    assert response.status_code == 200
+    assert "Incorrect verification code" in response.content.decode()
+    assert views_module._pending_2fa[email] is pending
+
+
+@pytest.mark.django_db
+def test_t18_account_2fa_missing_pending_client_shows_error(client):
+    email = "t_t18_2fa_missing@example.com"
+
+    response = client.post(reverse("account-2fa"), {"email": email, "code": "123456"})
+
+    assert response.status_code == 200
+    assert "log in again" in response.content.decode()
+
+
+# --- pull now ----------------------------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t18_account_pull_valid_session_starts_pull_and_worker(client, monkeypatch):
+    email = "t_t18_pull_ok@example.com"
+
+    class _Client:
+        def __init__(self, account):
+            self.account = account
+
+        @classmethod
+        def from_session(cls, e):
+            return cls(e)
+
+    monkeypatch.setattr(views_module, "ICloudClient", _Client)
+
+    pull_calls = []
+    worker_calls = []
+    monkeypatch.setattr(
+        views_module.pull,
+        "start_background_pull",
+        lambda folder, c: pull_calls.append((folder, c.account)),
+    )
+    monkeypatch.setattr(
+        views_module.downloads, "start_worker", lambda folder: worker_calls.append(folder)
+    )
+
+    response = client.post(reverse("account-pull"), {"account": email})
+
+    assert response.status_code == 302
+    assert response["Location"] == reverse("accounts")
+    assert pull_calls == [(settings.WORKING_FOLDER, email)]
+    assert worker_calls == [settings.WORKING_FOLDER]
+
+
+@pytest.mark.django_db
+def test_t18_account_pull_expired_session_shows_error_no_pull_started(client, monkeypatch):
+    email = "t_t18_pull_expired@example.com"
+
+    class _Client:
+        @classmethod
+        def from_session(cls, e):
+            return None
+
+    monkeypatch.setattr(views_module, "ICloudClient", _Client)
+
+    calls = []
+    monkeypatch.setattr(
+        views_module.pull, "start_background_pull", lambda *a: calls.append(("pull", *a))
+    )
+    monkeypatch.setattr(
+        views_module.downloads, "start_worker", lambda *a: calls.append(("worker", *a))
+    )
+
+    response = client.post(reverse("account-pull"), {"account": email})
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "re-authenticate" in body
+    assert email in body
+    assert calls == []
+
+
+# --- pull-status polling partial ---------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t18_pull_status_in_flight_renders_progress_partial(client):
+    email = "t_t18_pullstatus_inflight@example.com"
+    pull_module._current_pulls[email] = PullProgress(account=email, total=5, done=2)
+    try:
+        response = client.get(reverse("pull-status"), {"account": email})
+        body = response.content.decode()
+        assert "Pulling 2 / 5" in body
+        assert "load delay:2s" in body
+    finally:
+        pull_module._current_pulls.pop(email, None)
+
+
+@pytest.mark.django_db
+def test_t18_pull_status_idle_renders_inert_div(client):
+    email = "t_t18_pullstatus_idle@example.com"
+    pull_module._current_pulls.pop(email, None)
+
+    response = client.get(reverse("pull-status"), {"account": email})
+
+    body = response.content.decode()
+    assert "load delay:2s" not in body
+    assert "banner hidden" in body
+
+
+# --- grid/review badges + nav link --------------------------------------------
+
+
+@pytest.mark.django_db
+def test_t18_grid_shows_cloud_badge_and_pending_badge(client):
+    unique = "t_t18_grid_badges"
+    email = f"{unique}@example.com"
+    slug = remote_state.account_slug(email)
+    _remote_db_photo(f"r_{unique}_cloud", account=email, provenance=slug)
+    _remote_db_photo(
+        f"r_{unique}_pending",
+        account=email,
+        provenance=slug,
+        status=Photo.STATUS_SELECTED,
+        captured_at=_CAPTURED.replace(hour=21),
+    )
+
+    response = client.get(reverse("grid"), {"provenance": slug})
+
+    body = response.content.decode()
+    assert body.count("badge-cloud") == 2
+    assert "badge-pending" in body
+
+
+@pytest.mark.django_db
+def test_t18_grid_no_cloud_badge_for_local_photo(client):
+    photo = _db_photo("t_t18_grid_local/img.jpg", provenance="t_t18_grid_local")
+
+    response = client.get(reverse("grid"), {"provenance": "t_t18_grid_local"})
+
+    body = response.content.decode()
+    assert f"cell-{photo.pk}" in body
+    assert "badge-cloud" not in body
+
+
+@pytest.mark.django_db
+def test_t18_review_shows_cloud_and_pending_badges(client):
+    unique = "t_t18_review_badges"
+    email = f"{unique}@example.com"
+    slug = remote_state.account_slug(email)
+    photo = _remote_db_photo(
+        f"r_{unique}", account=email, provenance=slug, status=Photo.STATUS_SELECTED
+    )
+
+    response = client.get(reverse("review", args=[photo.pk]))
+
+    body = response.content.decode()
+    assert "badge-cloud" in body
+    assert "badge-pending" in body
+
+
+@pytest.mark.django_db
+def test_t18_grid_shows_accounts_nav_link(client):
+    response = client.get(reverse("grid"))
+
+    assert f'href="{reverse("accounts")}"' in response.content.decode()

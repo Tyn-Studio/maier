@@ -15,6 +15,12 @@
       <button type="button" id="live-badge" class="badge badge-live" title="Play Live Photo (L)">LIVE</button>
       {% endif %}
       {% endif %}
+      {% if photo.source == "icloud" %}
+      <span class="badge badge-cloud" title="iCloud photo">&#9729;</span>
+      {% endif %}
+      {% if photo.download_pending %}
+      <span class="badge badge-pending" title="Original downloading from iCloud">&#11015; pending</span>
+      {% endif %}
     </div>
 
     {% if photo.missing %}

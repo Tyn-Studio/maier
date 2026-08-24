@@ -270,6 +270,43 @@ main {
   color: #e2b34b;
 }
 
+/* iCloud badges (T18, SPEC §18): both live in the bottom-right corner
+   (same slot as .warn-glyph) since a remote row's captured_at always comes
+   from the API ("exif" source per pull.py), so the low-confidence-date
+   glyph never actually renders on a source="icloud" cell -- no real
+   conflict. badge-pending stacks directly above badge-cloud since a
+   selected-but-undownloaded remote photo shows both at once. Also used as-is
+   inside .review-image-wrap (review.html): nothing else occupies that
+   corner there (the live-photo toggle badge is top-left). */
+
+.badge-cloud {
+  top: auto;
+  left: auto;
+  bottom: 0.35rem;
+  right: 0.35rem;
+  color: var(--accent);
+}
+
+.badge-pending {
+  top: auto;
+  left: auto;
+  bottom: 1.4rem;
+  right: 0.35rem;
+  color: #e2b34b;
+  text-transform: none;
+  animation: pending-pulse 1.6s ease-in-out infinite;
+}
+
+@keyframes pending-pulse {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.5;
+  }
+}
+
 .cell-actions {
   position: absolute;
   bottom: 0.35rem;
@@ -685,4 +722,105 @@ main {
 
 .status-pill-rejected {
   color: var(--red);
+}
+
+/* --- accounts screen (T18, SPEC §18) ------------------------------------- */
+
+.accounts-link {
+  align-self: center;
+  padding: 0.35rem 0.6rem;
+  border-radius: 4px;
+  border: 1px solid var(--border);
+  color: var(--fg);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.banner.error {
+  background: rgba(226, 85, 75, 0.15);
+  border: 1px solid var(--red);
+  color: var(--red);
+}
+
+.banner.success {
+  background: rgba(53, 196, 106, 0.15);
+  border: 1px solid var(--green);
+  color: var(--green);
+}
+
+.accounts-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 1rem 0 1.5rem;
+  font-size: 0.9rem;
+}
+
+.accounts-table th,
+.accounts-table td {
+  text-align: left;
+  padding: 0.5rem 0.6rem;
+  border-bottom: 1px solid var(--border);
+  vertical-align: top;
+}
+
+.accounts-table th {
+  color: var(--muted);
+  font-weight: 600;
+  font-size: 0.8rem;
+  text-transform: uppercase;
+}
+
+.account-form {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 1rem;
+  align-items: end;
+  background: var(--bg-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 1rem;
+  margin-bottom: 1rem;
+  max-width: 460px;
+}
+
+.account-form label {
+  display: flex;
+  flex-direction: column;
+  gap: 0.25rem;
+  font-size: 0.8rem;
+  color: var(--muted);
+  flex: 1 1 160px;
+}
+
+.account-form input {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.5rem;
+  font-size: 0.9rem;
+}
+
+.account-form button {
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+}
+
+.account-pull-form {
+  display: inline-block;
+  margin-right: 0.5rem;
+}
+
+.account-pull-form button {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.8rem;
 }

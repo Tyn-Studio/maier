@@ -1,0 +1,16 @@
+{% comment %}
+Recursive load-polling, per-account (mirrors _scan_banner.html, T13
+decisions log): an in-flight pull re-renders this div and its
+"load delay:2s" trigger schedules the next poll; an idle/finished pull
+renders an inert div and the chain ends -- restarted by the "Pull now"
+button, whose response includes a live poller for that account.
+{% endcomment %}
+{% if progress and not progress.finished %}
+<div id="pull-poller-{{ slug }}" hx-get="{% url 'pull-status' %}?account={{ account|urlencode }}" hx-trigger="load delay:2s" hx-target="this" hx-swap="outerHTML">
+  <div class="banner indexing">
+    Pulling {{ progress.done }} / {{ progress.total }}{% if progress.errors %} ({{ progress.errors|length }} errors){% endif %}
+  </div>
+</div>
+{% else %}
+<div id="pull-poller-{{ slug }}"><div class="banner hidden"></div></div>
+{% endif %}

@@ -9,10 +9,20 @@ from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotAllo
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from . import culling, phaseb, previews, queries, streaming
+from . import culling, downloads, phaseb, previews, pull, queries, remote_state, streaming
+from .icloud import ICloudClient, ICloudError, TwoFactorRequired
 from .models import DuplicatePair, Photo
 
 _DUPE_ACTIONS = {"keep_left", "keep_right", "keep_both", "defer"}
+
+# Module-level pending-2FA store: single-user localhost app (SPEC/PLAN M5),
+# so an in-process dict keyed by email is fine -- there is exactly one
+# server, one browser, one person driving it. Flagged per T18 brief: a
+# multi-worker/multi-process deployment would need this in the DB or a
+# shared cache instead. Never holds a password, only the already-constructed
+# pending `ICloudClient` (its underlying pyicloud session already completed
+# the password exchange with Apple).
+_pending_2fa: dict[str, ICloudClient] = {}
 
 PAGE_SIZE = 200
 NEIGHBOUR_WINDOW = 10
@@ -168,6 +178,28 @@ def _download_pending(photo: Photo) -> bool:
     return photo.source == Photo.SOURCE_ICLOUD and photo.status == Photo.STATUS_SELECTED
 
 
+def _pull_progress_for(account: str):
+    """Isolated single-module read of pull.py's in-flight/last-finished
+    `PullProgress` for one account (module dict `pull._current_pulls`) --
+    same seam pattern as `_in_flight_scan_progress` above (PLAN T18 brief
+    flags both as isolated-helper reads rather than a public accessor on
+    pull.py, which exposes none).
+    """
+    return pull._current_pulls.get(account)
+
+
+def _recent_download_errors() -> list[str]:
+    """Isolated single-module read of downloads.py's `_last_progress`
+    (a global, NOT per-account -- downloads.py runs one worker for every
+    account's pending items together) -- surfaces the most recent original-
+    download run's errors (e.g. an expired session) on the accounts screen
+    without polling. Same seam pattern as `_in_flight_scan_progress`/
+    `_pull_progress_for` (PLAN T18 brief flags this as the third such seam).
+    """
+    progress = downloads._last_progress
+    return list(progress.errors) if progress is not None else []
+
+
 def _in_flight_scan_progress():
     """Pragmatic single-module read of scan.py's in-flight ScanProgress.
     Isolated here (per PLAN T5 brief) rather than spread across views --
@@ -274,3 +306,154 @@ def resolve_pair(request, pair_id):
     response = HttpResponse(status=200)
     response["HX-Redirect"] = url
     return response
+
+
+# --- iCloud accounts screen (SPEC §18, PLAN T18) ----------------------------
+
+
+def _accounts_rows(folder) -> list[dict]:
+    """One row per attached account (from state files on disk -- never a
+    network call, per T18 brief: session status is only ever discovered
+    when the user acts, not while just rendering this list).
+    """
+    rows = []
+    for email in remote_state.list_accounts(folder):
+        state = remote_state.load_state(folder, email)
+        rows.append(
+            {
+                "email": email,
+                "slug": remote_state.account_slug(email),
+                "last_pulled": state.cursor,
+                # "Remote rows in DB per account: total" (T18 brief) -- kept
+                # even after a row converts source="local" on download, since
+                # `account`/`remote_id` are left in place by
+                # downloads._convert_to_local, so this stays a stable "items
+                # known from this account" count across that transition.
+                "total": Photo.objects.filter(account=email).count(),
+                "pending": len(downloads.pending_remote_ids(email)),
+                "pull_progress": _pull_progress_for(email),
+            }
+        )
+    return rows
+
+
+def _accounts_context(request, **extra) -> dict:
+    context = {
+        "accounts": _accounts_rows(settings.WORKING_FOLDER),
+        "download_errors": _recent_download_errors(),
+        "added": request.GET.get("added", ""),
+    }
+    context.update(extra)
+    return context
+
+
+def accounts(request):
+    return render(request, "accounts.html", _accounts_context(request))
+
+
+def account_login(request):
+    """Add-account form target (SPEC §18 UI). The password lives only in
+    `request.POST` for the duration of this request -- it is passed
+    straight to `ICloudClient.login` and never assigned to any attribute,
+    logged, or written to disk (CLAUDE.md hard rule 8).
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    folder = settings.WORKING_FOLDER
+    email = request.POST.get("email", "").strip()
+    password = request.POST.get("password", "")
+
+    try:
+        ICloudClient.login(email, password)
+    except TwoFactorRequired as exc:
+        # Single-user localhost app (see `_pending_2fa` module docstring):
+        # stash the already-authenticated-pending client so the 2FA POST
+        # below submits the code on the SAME pyicloud session.
+        _pending_2fa[email] = exc.client
+        context = _accounts_context(request, pending_2fa_email=email)
+        return render(request, "accounts.html", context)
+    except ICloudError as exc:
+        context = _accounts_context(request, login_error=str(exc), prefill_email=email)
+        return render(request, "accounts.html", context)
+
+    # No 2FA required: ensure a state file exists so the account shows up
+    # in list_accounts() even before its first pull.
+    remote_state.save_state(folder, remote_state.load_state(folder, email))
+    return redirect(f"{reverse('accounts')}?added={email}")
+
+
+def account_2fa(request):
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    folder = settings.WORKING_FOLDER
+    email = request.POST.get("email", "").strip()
+    code = request.POST.get("code", "")
+
+    client = _pending_2fa.pop(email, None)
+    if client is None:
+        context = _accounts_context(
+            request,
+            login_error=f"No pending login for {email} -- please log in again below.",
+        )
+        return render(request, "accounts.html", context)
+
+    try:
+        verified = client.submit_2fa(code)
+    except ICloudError as exc:
+        _pending_2fa[email] = client  # keep the pending session for a retry
+        context = _accounts_context(request, pending_2fa_email=email, twofa_error=str(exc))
+        return render(request, "accounts.html", context)
+
+    if not verified:
+        _pending_2fa[email] = client  # keep the pending session for a retry
+        context = _accounts_context(
+            request, pending_2fa_email=email, twofa_error="Incorrect verification code."
+        )
+        return render(request, "accounts.html", context)
+
+    remote_state.save_state(folder, remote_state.load_state(folder, email))
+    return redirect(f"{reverse('accounts')}?added={email}")
+
+
+def account_pull(request):
+    """ "Pull now" (SPEC §18 UI). `account` is a POST field rather than a
+    path segment (flagged, PLAN T18 brief: avoids mapping an arbitrary
+    Apple-ID email on/off a URL-safe slug for routing purposes -- the slug
+    is still used for filenames/dirs elsewhere via `remote_state.account_slug`).
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    folder = settings.WORKING_FOLDER
+    email = request.POST.get("account", "").strip()
+
+    client = ICloudClient.from_session(email)
+    if client is None:
+        context = _accounts_context(
+            request,
+            pull_error=f"iCloud session for {email} has expired -- please re-authenticate below.",
+            prefill_email=email,
+        )
+        return render(request, "accounts.html", context)
+
+    pull.start_background_pull(folder, client)
+    # Resumes any previously-stuck selected-pending downloads too (e.g. rows
+    # left behind by a session expiry on an earlier worker run).
+    downloads.start_worker(folder)
+    return redirect("accounts")
+
+
+def pull_status(request):
+    """One step of the per-account pull banner's recursive load-polling --
+    mirrors `scan_status`/`_scan_banner.html` (T13 decisions log), keyed by
+    `?account=` instead of being global.
+    """
+    account = request.GET.get("account", "")
+    context = {
+        "account": account,
+        "slug": remote_state.account_slug(account) if account else "",
+        "progress": _pull_progress_for(account),
+    }
+    return render(request, "_pull_progress.html", context)

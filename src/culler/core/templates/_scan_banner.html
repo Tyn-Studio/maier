@@ -1,7 +1,9 @@
-{# Recursive load-polling: while a scan runs, each response re-renders this
-   div and its "load delay:2s" trigger schedules the next poll. When idle,
-   the div is inert (no hx attributes) and the chain simply ends -- restarted
-   by the rescan button, whose response swaps a live poller back in. #}
+{% comment %}
+Recursive load-polling: while a scan runs, each response re-renders this
+div and its "load delay:2s" trigger schedules the next poll. When idle,
+the div is inert (no hx attributes) and the chain simply ends -- restarted
+by the rescan button, whose response swaps a live poller back in.
+{% endcomment %}
 {% if progress and not progress.finished %}
 <div id="scan-poller" hx-get="{% url 'scan-status' %}" hx-trigger="load delay:2s" hx-target="this" hx-swap="outerHTML">
   <div class="banner indexing">

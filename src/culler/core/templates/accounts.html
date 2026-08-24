@@ -1,0 +1,88 @@
+{% extends "base.html" %}
+{% block page_name %}accounts{% endblock %}
+{% block content %}
+<a class="back-link" href="{% url 'grid' %}">&larr; Back to grid</a>
+<h1>iCloud accounts</h1>
+
+{% if added %}
+<div class="banner success">Added {{ added }}.</div>
+{% endif %}
+
+{% if pull_error %}
+<div class="banner error">{{ pull_error }}</div>
+{% endif %}
+
+{% if download_errors %}
+<div class="banner error">
+  Recent download errors:
+  <ul>
+    {% for error in download_errors %}
+    <li>{{ error }}</li>
+    {% endfor %}
+  </ul>
+</div>
+{% endif %}
+
+<table class="accounts-table">
+  <thead>
+    <tr>
+      <th>Account</th>
+      <th>Last pulled item</th>
+      <th>Items</th>
+      <th>Pending downloads</th>
+      <th></th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for row in accounts %}
+    <tr>
+      <td>{{ row.email }}</td>
+      <td>{% if row.last_pulled %}last pulled item: {{ row.last_pulled }}{% else %}never{% endif %}</td>
+      <td>{{ row.total }}</td>
+      <td>{{ row.pending }}</td>
+      <td>
+        <form method="post" action="{% url 'account-pull' %}" class="account-pull-form">
+          {% csrf_token %}
+          <input type="hidden" name="account" value="{{ row.email }}">
+          <button type="submit">Pull now</button>
+        </form>
+        {% include "_pull_progress.html" with progress=row.pull_progress account=row.email slug=row.slug %}
+      </td>
+    </tr>
+    {% empty %}
+    <tr><td colspan="5" class="empty-state">No accounts attached yet.</td></tr>
+    {% endfor %}
+  </tbody>
+</table>
+
+<h2>Add account</h2>
+<form method="post" action="{% url 'account-login' %}" class="account-form">
+  {% csrf_token %}
+  <label>Email
+    <input type="email" name="email" value="{{ prefill_email|default:'' }}" required autocomplete="username">
+  </label>
+  <label>Password
+    <input type="password" name="password" required autocomplete="current-password">
+  </label>
+  <button type="submit">Add account</button>
+</form>
+{% if login_error %}
+<div class="banner error">{{ login_error }}</div>
+{% endif %}
+
+{% if pending_2fa_email %}
+<h2>Enter verification code</h2>
+<p class="hint">A 2FA code was sent to your Apple devices for {{ pending_2fa_email }}.</p>
+<form method="post" action="{% url 'account-2fa' %}" class="account-form">
+  {% csrf_token %}
+  <input type="hidden" name="email" value="{{ pending_2fa_email }}">
+  <label>Code
+    <input type="text" name="code" inputmode="numeric" required autofocus>
+  </label>
+  <button type="submit">Verify</button>
+</form>
+{% if twofa_error %}
+<div class="banner error">{{ twofa_error }}</div>
+{% endif %}
+{% endif %}
+{% endblock %}

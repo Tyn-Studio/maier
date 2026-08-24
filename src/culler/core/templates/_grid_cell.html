@@ -18,6 +18,12 @@
   {% if photo.captured_at_source != "exif" %}
   <span class="warn-glyph" title="Low-confidence date ({{ photo.captured_at_source }})">&#9888;</span>
   {% endif %}
+  {% if photo.source == "icloud" %}
+  <span class="badge badge-cloud" title="iCloud photo">&#9729;</span>
+  {% endif %}
+  {% if photo.download_pending %}
+  <span class="badge badge-pending" title="Original downloading from iCloud">&#11015; pending</span>
+  {% endif %}
   {% if photo.missing %}
   <div class="cell-note">file is missing</div>
   {% else %}
