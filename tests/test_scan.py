@@ -3,6 +3,7 @@ import os
 import shutil
 import threading
 import time
+from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
@@ -387,3 +388,35 @@ def test_start_background_scan_single_flight(monkeypatch, tmp_path):
     while not progress1.finished and time.time() < deadline:
         time.sleep(0.02)
     assert progress1.finished is True
+
+
+# --- remote (iCloud) row exclusion (SPEC §18, PLAN T16) --------------------
+
+
+@pytest.mark.django_db
+def test_scan_never_marks_remote_rows_missing(tmp_path):
+    _build_tree(tmp_path)
+
+    remote = Photo.objects.create(
+        source=Photo.SOURCE_ICLOUD,
+        account="luis@example.com",
+        remote_id="r1",
+        relative_path="@icloud/luis@example.com/r1",
+        status=Photo.STATUS_OPTIONAL,
+        provenance="luis@example.com",
+        file_size=1000,
+        file_mtime=0.0,
+        captured_at=datetime(2025, 6, 14, tzinfo=UTC),
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+    )
+
+    scan(tmp_path, ScanProgress())
+
+    remote.refresh_from_db()
+    assert remote.missing is False
+    assert remote.relative_path == "@icloud/luis@example.com/r1"
+    # Not counted in the walk's totals either -- it has no real file.
+    progress = ScanProgress()
+    scan(tmp_path, progress)
+    assert progress.total == len(EXPECTED_PATHS)

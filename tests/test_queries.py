@@ -191,3 +191,55 @@ def test_recent_activity_respects_limit():
 @pytest.mark.django_db
 def test_recent_activity_empty_db():
     assert queries.recent_activity() == []
+
+
+# --- remote (iCloud) rows are part of the timeline (SPEC §18, PLAN T16) ----
+
+
+def _remote_photo(remote_id: str, account: str = "luis@example.com", **overrides) -> Photo:
+    kwargs = dict(
+        status=Photo.STATUS_OPTIONAL,
+        provenance=account,
+        file_size=1000,
+        file_mtime=0.0,
+        captured_at=_CAPTURED,
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    kwargs.update(overrides)
+    return Photo.objects.create(
+        source=Photo.SOURCE_ICLOUD,
+        account=account,
+        remote_id=remote_id,
+        relative_path=f"@icloud/{account}/{remote_id}",
+        **kwargs,
+    )
+
+
+@pytest.mark.django_db
+def test_filtered_photos_includes_remote_rows():
+    local = _db_photo("q_remote/a.jpg")
+    remote = _remote_photo("r1")
+
+    result = list(queries.filtered_photos(_qd()))
+
+    assert local in result
+    assert remote in result
+
+
+@pytest.mark.django_db
+def test_filtered_photos_filters_remote_rows_by_provenance():
+    _db_photo("q_remote_prov/a.jpg", provenance="apple-luis")
+    remote = _remote_photo("r1", account="maria@example.com")
+
+    result = list(queries.filtered_photos(_qd(provenance="maria@example.com")))
+
+    assert result == [remote]
+
+
+@pytest.mark.django_db
+def test_distinct_provenances_includes_account_emails():
+    _db_photo("q_remote_dp/a.jpg", provenance="apple-luis")
+    _remote_photo("r1", account="maria@example.com")
+
+    assert set(queries.distinct_provenances()) == {"apple-luis", "maria@example.com"}

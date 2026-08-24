@@ -1,4 +1,5 @@
 from django.db import models
+from django.db.models import Q
 
 
 class Photo(models.Model):
@@ -9,6 +10,16 @@ class Photo(models.Model):
         (STATUS_OPTIONAL, "Optional"),
         (STATUS_SELECTED, "Selected"),
         (STATUS_REJECTED, "Rejected"),
+    ]
+
+    # SPEC §18 / CLAUDE.md hard rules 8-9: remote (iCloud) rows have no local
+    # file until selected; they carry `account` + `remote_id` instead of a
+    # real `relative_path`.
+    SOURCE_LOCAL = "local"
+    SOURCE_ICLOUD = "icloud"
+    SOURCE_CHOICES = [
+        (SOURCE_LOCAL, "Local"),
+        (SOURCE_ICLOUD, "iCloud"),
     ]
 
     MEDIA_IMAGE = "image"
@@ -44,8 +55,26 @@ class Photo(models.Model):
     status_changed_at = models.DateTimeField(null=True, blank=True)
     indexed_at = models.DateTimeField(auto_now=True)
 
+    # source="local" (default) is an ordinary indexed file. source="icloud"
+    # rows have `relative_path` set to the sentinel
+    # f"@icloud/{account}/{remote_id}" (never a real path) until selection
+    # downloads the original and converts the row to source="local" (T17).
+    source = models.CharField(
+        max_length=8, choices=SOURCE_CHOICES, default=SOURCE_LOCAL, db_index=True
+    )
+    # Apple-ID email for source="icloud" rows; "" for local rows.
+    account = models.CharField(max_length=255, blank=True, default="")
+    remote_id = models.CharField(max_length=255, null=True, blank=True)
+
     class Meta:
         ordering = ["captured_at"]
+        constraints = [
+            models.UniqueConstraint(
+                fields=["account", "remote_id"],
+                condition=Q(remote_id__isnull=False),
+                name="unique_account_remote_id_when_present",
+            ),
+        ]
 
     def __str__(self) -> str:
         return self.relative_path

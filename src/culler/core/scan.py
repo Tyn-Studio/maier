@@ -89,7 +89,10 @@ def scan(folder: Path, progress: ScanProgress) -> None:
         candidates = _walk_candidates(folder)
         progress.total = len(candidates)
 
-        existing = {p.relative_path: p for p in Photo.objects.all()}
+        # SPEC §18: remote (iCloud) rows have no local file -- exclude them
+        # from the walk/reconciliation map so they're never marked missing
+        # or reconciled against a coincidentally same-sized/mtimed local file.
+        existing = {p.relative_path: p for p in Photo.objects.filter(source=Photo.SOURCE_LOCAL)}
         seen_paths: set[str] = set()
         # (size, mtime) -> [relative_path, ...] for files with no pre-existing
         # DB row, seen during this scan -- reconciliation candidates.

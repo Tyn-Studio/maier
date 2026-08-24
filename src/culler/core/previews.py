@@ -11,6 +11,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 
 from . import exiftool as exiftool_module
 from .models import Photo
+from .remote_state import _slug as _account_slug
 
 try:
     import pillow_heif
@@ -88,13 +89,31 @@ def _generate_image_preview(src: Path, dest: Path) -> None:
         img.save(dest, "JPEG", quality=JPEG_QUALITY)
 
 
+def remote_preview_dest(folder: Path, account: str, remote_id: str) -> Path:
+    """Cache path for a remote (iCloud) photo's prefetched medium preview
+    (SPEC §18: "Thumbnails/medium previews cache under `.culler/previews/`
+    keyed by `remote_id`"). Shared with `core/pull.py`, which writes the
+    file at this exact path -- keep the two in sync.
+    """
+    return _previews_dir(folder) / f"icloud-{_account_slug(account)}-{remote_id}.jpg"
+
+
 def preview_path(folder: Path, photo: Photo) -> Path:
     """Return the cached preview path, generating it first if absent.
 
     Never raises: any failure (missing source, unreadable/corrupt file,
     exiftool absent/failing on RAW, video extension) falls back to a shared
     placeholder image.
+
+    Remote (iCloud) rows have no local file (SPEC §18): the medium preview
+    is prefetched by `core/pull.py` ahead of time, so this never hits the
+    network from the request path -- if it isn't cached yet, callers get
+    the placeholder until the next pull completes.
     """
+    if photo.source == Photo.SOURCE_ICLOUD:
+        dest = remote_preview_dest(folder, photo.account, photo.remote_id or "")
+        return dest if dest.exists() else _placeholder_path(folder)
+
     src = folder / photo.relative_path
 
     if _is_video(src):

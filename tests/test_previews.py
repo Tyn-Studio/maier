@@ -10,7 +10,7 @@ from PIL import Image
 from culler.core import exiftool as exiftool_module
 from culler.core import previews
 from culler.core.models import Photo
-from culler.core.previews import _content_key, _preview_key, preview_path
+from culler.core.previews import _content_key, _preview_key, preview_path, remote_preview_dest
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 
@@ -313,3 +313,59 @@ def test_preview_view_returns_jpeg_with_cache_headers(client):
 def test_preview_view_404_for_unknown_pk(client):
     response = client.get(reverse("preview", args=[999999]))
     assert response.status_code == 404
+
+
+# --- remote (iCloud) rows (SPEC §18, PLAN T16) ------------------------------
+
+
+def _remote_photo(remote_id: str, account: str = "luis@example.com") -> Photo:
+    return Photo(
+        source=Photo.SOURCE_ICLOUD,
+        account=account,
+        remote_id=remote_id,
+        relative_path=f"@icloud/{account}/{remote_id}",
+    )
+
+
+def test_remote_preview_returns_cached_file_when_present(tmp_path):
+    photo = _remote_photo("r1")
+    dest = remote_preview_dest(tmp_path, "luis@example.com", "r1")
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"cached preview bytes")
+
+    result = preview_path(tmp_path, photo)
+
+    assert result == dest
+    assert result.read_bytes() == b"cached preview bytes"
+
+
+def test_remote_preview_returns_placeholder_when_not_yet_cached(tmp_path):
+    photo = _remote_photo("r2")
+
+    result = preview_path(tmp_path, photo)
+
+    assert result.name == "_placeholder.jpg"
+    assert result.exists()
+
+
+def test_remote_preview_never_hits_network_when_uncached(tmp_path, monkeypatch):
+    # No download hook exists on Photo/preview_path -- this asserts the
+    # request-path code never tries to reach out for one. Since there is no
+    # client argument at all to `preview_path`, the only way it *could*
+    # fetch would be importing core.pull/core.icloud at call time; assert
+    # neither module gets imported as a side effect of this call.
+    import sys
+
+    for mod in ("culler.core.pull", "culler.core.icloud"):
+        sys.modules.pop(mod, None)
+
+    photo = _remote_photo("r3")
+    preview_path(tmp_path, photo)
+
+    assert "culler.core.pull" not in sys.modules
+    assert "culler.core.icloud" not in sys.modules
+
+
+def test_remote_preview_dest_path_matches_pull_naming_scheme(tmp_path):
+    dest = remote_preview_dest(tmp_path, "Luis@Example.com", "abc123")
+    assert dest == tmp_path / ".culler" / "previews" / "icloud-luis-example-com-abc123.jpg"

@@ -93,6 +93,26 @@ def _real_sha256(path: Path) -> str:
     return hashlib.sha256(path.read_bytes()).hexdigest()
 
 
+def _remote_photo(remote_id: str, account: str = "luis@example.com", **overrides) -> Photo:
+    kwargs = dict(
+        status=Photo.STATUS_OPTIONAL,
+        provenance=account,
+        file_size=1000,
+        file_mtime=0.0,
+        captured_at=_CAPTURED,
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    kwargs.update(overrides)
+    return Photo.objects.create(
+        source=Photo.SOURCE_ICLOUD,
+        account=account,
+        remote_id=remote_id,
+        relative_path=f"@icloud/{account}/{remote_id}",
+        **kwargs,
+    )
+
+
 # --- run_phase_b: hashing ---------------------------------------------------
 
 
@@ -804,3 +824,62 @@ def test_start_phase_b_single_flight(monkeypatch, tmp_path):
     while not progress1.finished and time.time() < deadline:
         time.sleep(0.02)
     assert progress1.finished is True
+
+
+# --- remote (iCloud) row exclusion (SPEC §18, PLAN T16) --------------------
+
+
+@pytest.mark.django_db
+def test_run_phase_b_no_ops_on_remote_rows(tmp_path):
+    build_fixture_folder(tmp_path, {"a.jpg": None})
+    Photo.objects.all().delete()
+    scan(tmp_path, ScanProgress())
+    Photo.objects.update(sha256=None, phash=None)
+
+    remote = _remote_photo("r1")
+
+    progress = PhaseBProgress()
+    run_phase_b(tmp_path, progress)
+
+    assert progress.finished is True
+    remote.refresh_from_db()
+    assert remote.sha256 is None
+    assert remote.phash is None
+    assert remote.missing is False
+    assert remote.relative_path == "@icloud/luis@example.com/r1"
+
+    local = Photo.objects.get(relative_path="a.jpg")
+    assert local.sha256 is not None
+    assert not any("@icloud" in e for e in progress.errors)
+
+
+@pytest.mark.django_db
+def test_run_phase_b_handles_remote_video_row_without_crashing(tmp_path):
+    # A remote row with media_type=video sits in the same table the Live
+    # Photo pairing queries scan; it must never be treated as a pairing
+    # candidate (it has no local .mov file).
+    remote_video = _remote_photo("rv1", media_type=Photo.MEDIA_VIDEO)
+    remote_image = _remote_photo("ri1", media_type=Photo.MEDIA_IMAGE)
+
+    progress = PhaseBProgress()
+    run_phase_b(tmp_path, progress)
+
+    assert progress.finished is True
+    remote_video.refresh_from_db()
+    remote_image.refresh_from_db()
+    assert remote_image.live_photo_video_path is None
+
+
+@pytest.mark.django_db
+def test_duplicate_counts_and_representatives_ignore_remote_rows(tmp_path):
+    _remote_photo("r1")
+    _remote_photo("r2", account="maria@example.com")
+
+    assert duplicate_counts() == {}
+    assert non_representative_pks() == set()
+
+
+@pytest.mark.django_db
+def test_live_photo_companion_paths_ignores_remote_rows(tmp_path):
+    _remote_photo("r1")
+    assert live_photo_companion_paths() == set()

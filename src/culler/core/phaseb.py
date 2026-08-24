@@ -64,10 +64,13 @@ def _sha256_file(path: Path) -> str:
 
 def _hash_pending(folder: Path, progress: PhaseBProgress) -> None:
     try:
+        # SPEC §18: remote (iCloud) rows have no local file to hash -- their
+        # sha256 stays NULL forever; excluding them here avoids re-queueing
+        # (and erroring on) the same sentinel path every Phase B run.
         pending = list(
-            Photo.objects.filter(sha256__isnull=True, missing=False).values_list(
-                "pk", "relative_path"
-            )
+            Photo.objects.filter(sha256__isnull=True, missing=False)
+            .exclude(source=Photo.SOURCE_ICLOUD)
+            .values_list("pk", "relative_path")
         )
     except Exception as exc:
         # Transient DB contention (e.g. a scan's own transaction still open)
@@ -106,13 +109,18 @@ def _phash_pending(folder: Path, progress: PhaseBProgress) -> None:
     placeholder would pair every such photo with every other one.
     """
     try:
+        # `sha256__isnull=False` already excludes remote rows (their sha256
+        # is always NULL, see `_hash_pending`) -- `.exclude(source=...)` is
+        # kept explicit anyway so this stays correct even if that changes.
         pending = list(
             Photo.objects.filter(
                 phash__isnull=True,
                 missing=False,
                 media_type=Photo.MEDIA_IMAGE,
                 sha256__isnull=False,
-            ).values_list("pk", "relative_path")
+            )
+            .exclude(source=Photo.SOURCE_ICLOUD)
+            .values_list("pk", "relative_path")
         )
     except Exception as exc:
         progress.errors.append(f"phase B: could not list photos pending pHash: {exc}")
@@ -145,8 +153,12 @@ def _pair_near_duplicates(progress: PhaseBProgress) -> None:
     Idempotent: `get_or_create` on the canonical (lower pk, higher pk) pair.
     """
     try:
+        # phash__isnull=False already excludes remote rows (never pHashed,
+        # see `_phash_pending`) -- `.exclude(source=...)` kept explicit for
+        # the same reason as `_phash_pending`'s.
         rows = list(
             Photo.objects.filter(phash__isnull=False, missing=False)
+            .exclude(source=Photo.SOURCE_ICLOUD)
             .order_by("captured_at", "pk")
             .values_list("pk", "captured_at", "phash", "sha256")
         )
@@ -244,13 +256,17 @@ def _pair_live_photos(progress: PhaseBProgress) -> None:
             Photo.objects.filter(pk__in=dangling_pks).update(live_photo_video_path=None)
 
     try:
+        # SPEC §18: remote (iCloud) rows have no local file to pair (their
+        # sentinel `relative_path` would never plausibly share a directory
+        # with a real video anyway, but exclude explicitly per brief).
         videos = list(
-            Photo.objects.filter(media_type=Photo.MEDIA_VIDEO, missing=False).values_list(
-                "relative_path", "captured_at"
-            )
+            Photo.objects.filter(media_type=Photo.MEDIA_VIDEO, missing=False)
+            .exclude(source=Photo.SOURCE_ICLOUD)
+            .values_list("relative_path", "captured_at")
         )
         images = list(
             Photo.objects.filter(media_type=Photo.MEDIA_IMAGE, missing=False)
+            .exclude(source=Photo.SOURCE_ICLOUD)
             .filter(Q(live_photo_video_path__isnull=True) | Q(live_photo_video_path=""))
             .values_list("pk", "relative_path", "captured_at")
         )
