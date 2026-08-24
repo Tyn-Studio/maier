@@ -23,4 +23,7 @@ urlpatterns = [
     path("accounts/pull", views.account_pull, name="account-pull"),
     path("accounts/disconnect", views.account_disconnect, name="account-disconnect"),
     path("pull-status", views.pull_status, name="pull-status"),
+    path("settings", views.settings_page, name="settings"),
+    path("export-now", views.export_now, name="export-now"),
+    path("export-status", views.export_status, name="export-status"),
 ]

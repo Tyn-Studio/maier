@@ -3,6 +3,9 @@ file moves in moves.py, previews in previews.py. See SPEC §10 for the UI
 spec these implement.
 """
 
+from pathlib import Path
+from urllib.parse import quote
+
 from django.conf import settings
 from django.core.paginator import Paginator
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotAllowed
@@ -13,6 +16,8 @@ from . import (
     culling,
     disconnect,
     downloads,
+    export,
+    folder_settings,
     phaseb,
     preview_upgrade,
     previews,
@@ -599,3 +604,74 @@ def pull_status(request):
         "progress": _pull_progress_for(account),
     }
     return render(request, "_pull_progress.html", context)
+
+
+# --- Export (SPEC §3, PLAN T25) --------------------------------------------
+
+
+def _current_export_progress():
+    """Isolated single-module read of export.py's in-flight/last-finished
+    `ExportProgress` -- same seam pattern as `_in_flight_scan_progress`/
+    `_pull_progress_for` above.
+    """
+    return export._current_export
+
+
+def settings_page(request):
+    """Per-folder settings screen (PLAN T25): export destination/mode/date-
+    prefix, backed by `folder_settings.json`. A native folder picker isn't
+    wired here (flagged, per brief): pywebview's file dialog must run on the
+    main thread, which a Django request thread never is -- the text input is
+    the only picker in both browser and window mode for now; a proper
+    desktop-window "Choose..." button is a follow-up.
+    """
+    folder = settings.WORKING_FOLDER
+
+    if request.method == "POST":
+        dest = request.POST.get("export_destination", "").strip()
+        mode = request.POST.get("export_mode", folder_settings.MODE_MANUAL)
+        if mode not in (folder_settings.MODE_MANUAL, folder_settings.MODE_AUTOMATIC):
+            mode = folder_settings.MODE_MANUAL
+        date_prefix = request.POST.get("export_date_prefix") == "on"
+        folder_settings.save_settings(
+            folder,
+            folder_settings.FolderSettings(
+                export_destination=dest, export_mode=mode, export_date_prefix=date_prefix
+            ),
+        )
+        return redirect("settings")
+
+    context = {
+        "export_settings": folder_settings.load_settings(folder),
+        "notice": request.GET.get("notice", ""),
+        "export_progress": _current_export_progress(),
+    }
+    return render(request, "settings.html", context)
+
+
+def export_now(request):
+    """ "Export now" (PLAN T25 UI): reachable from the grid filter bar and
+    the settings page, both plain (non-htmx) POSTs -- always redirects back
+    to the settings page, either with a "set a destination first" notice or
+    to show the background-run progress banner there.
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    folder = settings.WORKING_FOLDER
+    current = folder_settings.load_settings(folder)
+    if not current.export_destination:
+        notice = "Set an export destination below before exporting."
+        return redirect(f"{reverse('settings')}?notice={quote(notice)}")
+
+    export.start_background_export(
+        folder, Path(current.export_destination), date_prefix=current.export_date_prefix
+    )
+    return redirect("settings")
+
+
+def export_status(request):
+    """One step of the export banner's recursive load-polling -- mirrors
+    `scan_status`/`_scan_banner.html`.
+    """
+    return render(request, "_export_progress.html", {"progress": _current_export_progress()})

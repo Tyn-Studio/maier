@@ -39,6 +39,11 @@
   <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-poller" hx-swap="outerHTML">Rescan</button>
   <a class="summary-link" href="{% url 'summary' %}">Summary</a>
   <a class="accounts-link" href="{% url 'accounts' %}">Accounts</a>
+  <a class="settings-link" href="{% url 'settings' %}">Settings</a>
+  <form method="post" action="{% url 'export-now' %}" class="export-now-form">
+    {% csrf_token %}
+    <button type="submit">Export &uarr;</button>
+  </form>
   {% if unresolved_pair_count %}
   <a class="dupes-badge" href="{% url 'dupes' %}">Dupes ({{ unresolved_pair_count }})</a>
   {% endif %}

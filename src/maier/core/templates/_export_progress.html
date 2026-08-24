@@ -1,0 +1,28 @@
+{% comment %}
+Recursive load-polling (mirrors _scan_banner.html/_pull_progress.html): an
+in-flight export re-renders this div and its "load delay:2s" trigger
+schedules the next poll. A finished run shows the final copied/skipped/
+errors banner and the chain ends there -- it persists until the next page
+load, per PLAN T25 ("keep simple"). Idle (never run this session) renders an
+inert div.
+{% endcomment %}
+{% if progress and not progress.finished %}
+<div id="export-poller" hx-get="{% url 'export-status' %}" hx-trigger="load delay:2s" hx-target="this" hx-swap="outerHTML">
+  <div class="banner indexing">Exporting&hellip; {{ progress.copied }} copied, {{ progress.skipped }} skipped{% if progress.errors %} ({{ progress.errors|length }} errors){% endif %}</div>
+</div>
+{% elif progress %}
+<div id="export-poller">
+  <div class="banner {% if progress.errors %}error{% else %}success{% endif %}">
+    Export complete: {{ progress.copied }} copied, {{ progress.skipped }} skipped{% if progress.errors %}, {{ progress.errors|length }} errors{% endif %}.
+    {% if progress.errors %}
+    <ul>
+      {% for error in progress.errors %}
+      <li>{{ error }}</li>
+      {% endfor %}
+    </ul>
+    {% endif %}
+  </div>
+</div>
+{% else %}
+<div id="export-poller"><div class="banner hidden"></div></div>
+{% endif %}

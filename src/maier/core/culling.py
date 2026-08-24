@@ -45,7 +45,14 @@ def apply_status_any(folder: Path, photo: Photo, new_status: str) -> Photo:
         raise ValueError(f"invalid status: {new_status!r}")
 
     if photo.source != Photo.SOURCE_ICLOUD:
-        return phaseb.apply_status_to_group(folder, photo, new_status)
+        updated = phaseb.apply_status_to_group(folder, photo, new_status)
+        if updated.status == Photo.STATUS_SELECTED:
+            # PLAN T25: fire-and-forget auto-export hook -- no-op unless the
+            # folder is configured for automatic export (never raises).
+            from . import export
+
+            export.maybe_auto_export(folder, updated)
+        return updated
 
     return _apply_remote_status(Path(folder), photo, new_status)
 

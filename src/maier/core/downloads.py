@@ -320,6 +320,16 @@ def _download_one(folder: Path, client, photo: Photo, progress: DownloadProgress
         progress.errors.append(f"{photo.remote_id}: post-download bookkeeping failed: {exc}")
         return
 
+    # PLAN T25: fire-and-forget auto-export hook, after the original has
+    # landed and the row converted to local -- refresh first, `photo` in
+    # memory still carries the pre-conversion "@icloud/..." relative_path
+    # (`_convert_to_local` updates the DB via a queryset .update(), not this
+    # instance).
+    from . import export
+
+    photo.refresh_from_db()
+    export.maybe_auto_export(folder, photo)
+
     _handle_live_photo(folder, client, photo, slug, dest, progress)
 
 

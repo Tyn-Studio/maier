@@ -9,9 +9,10 @@ from PIL import Image
 from fixtures import build_fixture_folder
 from maier.core import disconnect as disconnect_module
 from maier.core import downloads as downloads_module
+from maier.core import export as export_module
+from maier.core import folder_settings, remote_state
 from maier.core import previews as previews_module
 from maier.core import pull as pull_module
-from maier.core import remote_state
 from maier.core import scan as scan_module
 from maier.core import views as views_module
 from maier.core.models import DuplicatePair, Photo
@@ -1835,3 +1836,163 @@ def test_sharp_status_stops_polling_after_max_tries(client):
     body = response.content.decode()
     assert "hx-get" not in body
     assert "v=medium" not in body
+
+
+# --- T25 settings / export --------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _t25_reset_export_state():
+    """`export_module._current_export` is a module-global (mirrors
+    scan.py's `_current_scan`) -- clear it so an in-flight/finished run
+    from an earlier test can't leak into a later "idle" assertion.
+    """
+    export_module._current_export = None
+    yield
+    export_module._current_export = None
+
+
+@pytest.mark.django_db
+def test_settings_page_renders_defaults(client):
+    response = client.get(reverse("settings"))
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert 'name="export_destination"' in body
+    assert 'name="export_mode"' in body
+    assert 'name="export_date_prefix"' in body
+
+
+@pytest.mark.django_db
+def test_settings_page_post_saves_settings(client):
+    response = client.post(
+        reverse("settings"),
+        {
+            "export_destination": "/Volumes/Backup/export",
+            "export_mode": "automatic",
+            "export_date_prefix": "on",
+        },
+    )
+
+    assert response.status_code == 302
+    assert response["Location"] == reverse("settings")
+
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.export_destination == "/Volumes/Backup/export"
+    assert saved.export_mode == "automatic"
+    assert saved.export_date_prefix is True
+
+
+@pytest.mark.django_db
+def test_settings_page_post_manual_mode_unchecked_date_prefix(client):
+    client.post(
+        reverse("settings"),
+        {"export_destination": "/dest", "export_mode": "manual"},
+    )
+
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.export_mode == "manual"
+    assert saved.export_date_prefix is False
+
+
+@pytest.mark.django_db
+def test_settings_page_shows_saved_values_on_reload(client):
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(export_destination="/x/y", export_mode="automatic"),
+    )
+
+    response = client.get(reverse("settings"))
+
+    body = response.content.decode()
+    assert "/x/y" in body
+
+
+@pytest.mark.django_db
+def test_export_now_no_destination_redirects_to_settings_with_notice(client):
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER, folder_settings.FolderSettings(export_destination="")
+    )
+
+    response = client.post(reverse("export-now"))
+
+    assert response.status_code == 302
+    assert response["Location"].startswith(reverse("settings"))
+    assert "notice=" in response["Location"]
+
+
+@pytest.mark.django_db
+def test_export_now_get_not_allowed(client):
+    response = client.get(reverse("export-now"))
+    assert response.status_code == 405
+
+
+@pytest.mark.django_db
+def test_export_now_starts_background_export_with_configured_destination(client, monkeypatch):
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(
+            export_destination="/tmp/somewhere", export_mode="manual", export_date_prefix=True
+        ),
+    )
+    calls = []
+
+    def _fake_start(folder, dest, *, date_prefix=False):
+        calls.append((folder, dest, date_prefix))
+        return export_module.ExportProgress(finished=True, copied=3, skipped=1)
+
+    monkeypatch.setattr(export_module, "start_background_export", _fake_start)
+
+    response = client.post(reverse("export-now"))
+
+    assert response.status_code == 302
+    assert response["Location"] == reverse("settings")
+    assert len(calls) == 1
+    called_folder, called_dest, called_date_prefix = calls[0]
+    assert called_folder == settings.WORKING_FOLDER
+    assert str(called_dest) == "/tmp/somewhere"
+    assert called_date_prefix is True
+
+
+@pytest.mark.django_db
+def test_export_status_in_flight_renders_poller(client):
+    export_module._current_export = export_module.ExportProgress(copied=2, skipped=0)
+
+    response = client.get(reverse("export-status"))
+
+    body = response.content.decode()
+    assert "load delay:2s" in body
+    assert "2 copied" in body
+
+
+@pytest.mark.django_db
+def test_export_status_finished_renders_final_banner_and_stops_polling(client):
+    export_module._current_export = export_module.ExportProgress(
+        finished=True, copied=5, skipped=2, errors=["boom"]
+    )
+
+    response = client.get(reverse("export-status"))
+
+    body = response.content.decode()
+    assert "load delay:2s" not in body
+    assert "5 copied" in body
+    assert "2 skipped" in body
+    assert "boom" in body
+
+
+@pytest.mark.django_db
+def test_export_status_idle_renders_inert_div(client):
+    response = client.get(reverse("export-status"))
+
+    body = response.content.decode()
+    assert "load delay:2s" not in body
+    assert "banner hidden" in body
+
+
+@pytest.mark.django_db
+def test_grid_has_export_and_settings_links(client):
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert f'href="{reverse("settings")}"' in body
+    assert f'action="{reverse("export-now")}"' in body
