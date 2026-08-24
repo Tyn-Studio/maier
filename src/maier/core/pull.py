@@ -116,10 +116,14 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
         counters_lock = threading.Lock()
 
         def _fetch_preview(rid: str, media_type: str) -> None:
-            # Videos need the JPEG poster rendition ("medium_image") -- their
-            # plain "medium" is an MP4, which saved under a .jpg preview name
-            # renders as a broken thumbnail (found live, 2026-08-24).
-            version = "medium_image" if media_type == Photo.MEDIA_VIDEO else "medium"
+            # The bulk sync fetches the small "thumb" tier (~60KB, plenty for
+            # grid cells): at 41k real-library scale the ~700KB "medium" tier
+            # meant ~28GB and hours of downloading before the grid was fully
+            # browsable (2026-08-24). Review-screen quality upgrades come on
+            # demand later. Videos need the JPEG poster variants -- their
+            # plain thumb/medium renditions are MP4s, which saved under a
+            # .jpg preview name render as broken thumbnails.
+            version = "thumb_image" if media_type == Photo.MEDIA_VIDEO else "thumb"
             err = None
             try:
                 dest = previews_module.remote_preview_dest(folder, client.account, rid)
@@ -168,7 +172,7 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
 
         iteration_failed = False
         max_captured_at: datetime | None = state.cursor
-        with ThreadPoolExecutor(max_workers=4) as pool:
+        with ThreadPoolExecutor(max_workers=8) as pool:
             with counters_lock:
                 progress.total += len(backlog)
             for rid, media_type in backlog:

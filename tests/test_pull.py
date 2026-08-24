@@ -135,8 +135,8 @@ def test_pull_prefetches_medium_preview(tmp_path):
 
     dest = remote_preview_dest(tmp_path, "luis@example.com", "r1")
     assert dest.exists()
-    assert dest.read_bytes() == b"fake-medium-r1"
-    assert client.downloaded == [("r1", "medium")]
+    assert dest.read_bytes() == b"fake-thumb-r1"
+    assert client.downloaded == [("r1", "thumb")]
 
 
 @pytest.mark.django_db
@@ -165,7 +165,7 @@ def test_pull_skips_assets_already_downloaded_locally(tmp_path):
 
     assert not Photo.objects.filter(remote_id="r1").exists()
     assert Photo.objects.filter(remote_id="r2").exists()
-    assert client.downloaded == [("r2", "medium")]
+    assert client.downloaded == [("r2", "thumb")]
 
 
 # --- cursor / incremental behaviour -----------------------------------------
