@@ -35,7 +35,6 @@ from maier.core.phaseb import (
     non_representative_pks,
     run_phase_b,
     start_phase_b,
-    unresolved_pair_count,
 )
 from maier.core.scan import ScanProgress, scan
 from maier.core.sources import add_local_source
