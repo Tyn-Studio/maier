@@ -365,7 +365,7 @@ def account_login(request):
     password = request.POST.get("password", "")
 
     try:
-        ICloudClient.login(email, password)
+        logged_in = ICloudClient.login(email, password)
     except TwoFactorRequired as exc:
         # Single-user localhost app (see `_pending_2fa` module docstring):
         # stash the already-authenticated-pending client so the 2FA POST
@@ -380,6 +380,9 @@ def account_login(request):
     # No 2FA required: ensure a state file exists so the account shows up
     # in list_accounts() even before its first pull.
     remote_state.save_state(folder, remote_state.load_state(folder, email))
+    # Auto-start the first pull: a freshly attached account with no photos
+    # is a UX trap (authenticated-but-empty timeline, 2026-08-24 incident).
+    pull.start_background_pull(folder, logged_in)
     return redirect(f"{reverse('accounts')}?added={email}")
 
 
@@ -414,6 +417,9 @@ def account_2fa(request):
         return render(request, "accounts.html", context)
 
     remote_state.save_state(folder, remote_state.load_state(folder, email))
+    # Auto-start the first pull on the just-verified client (same UX-trap
+    # fix as account_login's success path).
+    pull.start_background_pull(folder, client)
     return redirect(f"{reverse('accounts')}?added={email}")
 
 

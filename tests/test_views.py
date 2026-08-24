@@ -1268,12 +1268,19 @@ def test_t18_account_login_success_creates_state_file_and_redirects(client, monk
             return cls(e)
 
     monkeypatch.setattr(views_module, "ICloudClient", _Client)
+    pulled = []
+    monkeypatch.setattr(
+        views_module.pull, "start_background_pull", lambda folder, c: pulled.append(c.account)
+    )
 
     response = client.post(reverse("account-login"), {"email": email, "password": "hunter2"})
 
     assert response.status_code == 302
     assert response["Location"] == f"{reverse('accounts')}?added={email}"
     assert email in remote_state.list_accounts(settings.WORKING_FOLDER)
+    # Successful attach auto-starts the first pull (an authenticated but
+    # empty timeline was a UX trap -- 2026-08-24).
+    assert pulled == [email]
 
 
 @pytest.mark.django_db
@@ -1322,11 +1329,12 @@ def test_t18_account_login_icloud_error_shows_error_no_state_file(client, monkey
 
 
 @pytest.mark.django_db
-def test_t18_account_2fa_success_creates_state_file_and_redirects(client):
+def test_t18_account_2fa_success_creates_state_file_and_redirects(client, monkeypatch):
     email = "t_t18_2fa_ok@example.com"
 
     class _Pending:
         def __init__(self):
+            self.account = email
             self.codes = []
 
         def submit_2fa(self, code):
@@ -1335,6 +1343,10 @@ def test_t18_account_2fa_success_creates_state_file_and_redirects(client):
 
     pending = _Pending()
     views_module._pending_2fa[email] = pending
+    pulled = []
+    monkeypatch.setattr(
+        views_module.pull, "start_background_pull", lambda folder, c: pulled.append(c.account)
+    )
 
     response = client.post(reverse("account-2fa"), {"email": email, "code": "123456"})
 
@@ -1343,6 +1355,7 @@ def test_t18_account_2fa_success_creates_state_file_and_redirects(client):
     assert email in remote_state.list_accounts(settings.WORKING_FOLDER)
     assert email not in views_module._pending_2fa
     assert pending.codes == ["123456"]
+    assert pulled == [email]
 
 
 @pytest.mark.django_db
