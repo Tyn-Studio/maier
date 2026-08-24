@@ -36,6 +36,13 @@ class FakeClient:
         dest.write_bytes(self.payload)
 
 
+def _wait_for_content(path, timeout: float = 5) -> None:
+    """Wait until `path` exists AND has bytes -- `dest.exists()` alone races
+    the worker thread's plain `write_bytes` (file created before content
+    lands; flaked on the v0.1.0 release runner, 2026-08-24)."""
+    _wait_for(lambda: path.exists() and len(path.read_bytes()) > 0, timeout=timeout)
+
+
 def _wait_for(predicate, timeout: float = 5) -> None:
     deadline = time.time() + timeout
     while time.time() < deadline:
@@ -70,7 +77,7 @@ def test_enqueue_fetches_medium_to_expected_dest(tmp_path, monkeypatch):
     preview_upgrade.enqueue_medium(tmp_path, photo)
 
     dest = previews.remote_medium_dest(tmp_path, "luis@example.com", "r1")
-    _wait_for(dest.exists)
+    _wait_for_content(dest)
     assert dest.read_bytes() == b"medium-bytes"
     assert client.calls == [("r1", "medium")]
 
@@ -83,7 +90,7 @@ def test_video_uses_medium_image_version(tmp_path, monkeypatch):
     preview_upgrade.enqueue_medium(tmp_path, photo)
 
     dest = previews.remote_medium_dest(tmp_path, "luis@example.com", "r2")
-    _wait_for(dest.exists)
+    _wait_for_content(dest)
     assert client.calls == [("r2", "medium_image")]
 
 
@@ -177,7 +184,7 @@ def test_single_flight_per_remote_id(tmp_path, monkeypatch):
     release.set()
 
     dest = previews.remote_medium_dest(tmp_path, "luis@example.com", "r5")
-    _wait_for(dest.exists)
+    _wait_for_content(dest)
     time.sleep(0.1)  # let a stray duplicate submission (were there a bug) finish too
     assert client.calls == [("r5", "medium")]
 
@@ -197,7 +204,7 @@ def test_failure_drops_from_pending_and_retries_on_next_enqueue(tmp_path, monkey
 
     client.fail = False
     preview_upgrade.enqueue_medium(tmp_path, photo)
-    _wait_for(dest.exists)
+    _wait_for_content(dest)
     assert client.calls == [("r6", "medium"), ("r6", "medium")]
 
 
@@ -217,10 +224,10 @@ def test_client_resolved_once_per_account(tmp_path, monkeypatch):
 
     preview_upgrade.enqueue_medium(tmp_path, photo_a)
     dest_a = previews.remote_medium_dest(tmp_path, "luis@example.com", "r7")
-    _wait_for(dest_a.exists)
+    _wait_for_content(dest_a)
 
     preview_upgrade.enqueue_medium(tmp_path, photo_b)
     dest_b = previews.remote_medium_dest(tmp_path, "luis@example.com", "r8")
-    _wait_for(dest_b.exists)
+    _wait_for_content(dest_b)
 
     assert calls == ["luis@example.com"]
