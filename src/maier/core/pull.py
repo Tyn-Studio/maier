@@ -167,9 +167,7 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
             if second is not None:
                 preview_client = second
         has_cached = (
-            None
-            if preview_client is not client
-            else getattr(client, "has_asset_cached", None)
+            None if preview_client is not client else getattr(client, "has_asset_cached", None)
         )
         deferred: list[tuple[str, str]] = []
         deferred_lock = threading.Lock()
