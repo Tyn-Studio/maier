@@ -35,9 +35,36 @@ from maier.core.phaseb import (
     non_representative_pks,
     run_phase_b,
     start_phase_b,
+    unresolved_pair_count,
 )
 from maier.core.scan import ScanProgress, scan
 from maier.core.sources import add_local_source
+
+
+def _drain_phase_b(timeout: float = 10) -> None:
+    """Wait out any in-flight Phase B thread. `scan()` auto-spawns one
+    (PLAN T7), so a test that calls `scan()` and then writes to core_photo
+    on the main connection races the thread's own sha256/phash UPDATEs --
+    the intermittent CI failure `database table is locked: core_photo`
+    (2026-08-24, macos-14). Draining mirrors test_integration_icloud.py's
+    `_wait_for_phase_b`.
+    """
+    progress = phaseb_module._current_phase_b
+    if progress is None:
+        return
+    deadline = time.time() + timeout
+    while not progress.finished and time.time() < deadline:
+        time.sleep(0.02)
+
+
+@pytest.fixture(autouse=True)
+def _no_phase_b_bleed():
+    """Phase B threads spawned by one test must never outlive it into the
+    next test's DB writes (or pytest-django's teardown flush)."""
+    _drain_phase_b()
+    yield
+    _drain_phase_b()
+
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 
@@ -850,6 +877,11 @@ def test_start_phase_b_finishes_and_hashes(tmp_path):
     build_fixture_folder(tmp_path, {"a.jpg": None})
     Photo.objects.all().delete()
     scan(tmp_path, ScanProgress())
+    # scan() auto-spawned a Phase B run; let it finish before clearing
+    # sha256 on the main connection (see _drain_phase_b) -- and so that
+    # start_phase_b below starts a FRESH run instead of returning the
+    # in-flight one via single-flight.
+    _drain_phase_b()
     Photo.objects.update(sha256=None)
 
     progress = start_phase_b(tmp_path)
