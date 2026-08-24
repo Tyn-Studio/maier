@@ -46,6 +46,34 @@ installed wheel; report these to the lead so they can be sanity-checked):
   `response.raw.read()`), not a chunked-iterable response object. This is a
   deviation from the brief's assumption of `iter_content()`-based streaming:
   see `download()` below.
+
+Live Photos (T20, investigated in
+`src/pyicloud/services/photos_cloudkit/service.py` of the installed 2.6.5
+wheel):
+
+- `PhotoAsset.is_live_photo` (service.py:1792-1798) is a bool property that
+  reads `resOriginalVidComplFileType` directly off the already-fetched
+  `CPLMaster` record (`self._master_record`, populated during the SAME
+  listing query that yields the asset -- see `_process_asset_page` around
+  service.py:1039-1067, which builds each `PhotoAsset` from a master+asset
+  record pair already in hand). Reading `is_live_photo` therefore costs no
+  extra network round trip, at listing time or later.
+- `PhotoAsset.PHOTO_VERSION_LOOKUP` (service.py:1672-1681) maps the version
+  key `"original_video"` to CloudKit field prefix `"resOriginalVidCompl"`
+  (i.e. field `resOriginalVidComplRes`). `PhotoAsset.resources`
+  (service.py:1801-1821) builds a `PhotoResource` for every key in
+  `PHOTO_VERSION_LOOKUP` whose backing CloudKit field is present on the
+  master record -- for a non-Live-Photo image, `resOriginalVidComplRes` is
+  simply absent, so `"original_video"` never appears in `.versions`/
+  `.resources` at all (mirrors `is_live_photo`, which gates on the sibling
+  `...FileType` field). `mappers.build_photo_resource` (mappers.py:121-171)
+  also renames the resource to `<stem>.MOV` automatically.
+- `PhotoAsset.download()` (service.py:1831-1840) is version-agnostic -- it
+  just resolves `download_url(version)` via `.resources.get(version)` and
+  fetches it, so `"original_video"` downloads through the exact same code
+  path as `"thumb"`/`"medium"`/`"original"`. `download_live_video()` below
+  therefore reuses this class's own `download()` method rather than
+  duplicating the atomic-write logic.
 """
 
 from __future__ import annotations
@@ -77,7 +105,17 @@ _PYICLOUD_ERRORS = (PyiCloudException, OSError)
 # "medium_image"/"thumb_image" (verified against a real library,
 # 2026-08-24) -- callers fetching an *image preview of a video* must use
 # those; falling back to "original" would hand back video bytes.
-_VERSION_NAMES = ("thumb", "medium", "original", "thumb_image", "medium_image")
+# "original_video" (T20) is a Live Photo's paired video component -- only
+# present on `.versions` for assets where `is_live_photo` is True (see
+# module docstring); `download_live_video()` is the only caller.
+_VERSION_NAMES = (
+    "thumb",
+    "medium",
+    "original",
+    "thumb_image",
+    "medium_image",
+    "original_video",
+)
 _IMAGE_ONLY_FALLBACKS = {
     "medium_image": ("medium_image", "thumb_image"),
     "thumb_image": ("thumb_image", "medium_image"),
@@ -111,6 +149,11 @@ class RemoteAsset:
     captured_at: datetime  # aware UTC
     size: int
     media_type: str  # "image" | "video"
+    # T20: cheap at listing time (see module docstring -- `is_live_photo`
+    # reads a field already present on the master record fetched during
+    # listing, no extra request). Defaults False so existing positional
+    # `RemoteAsset(...)` call sites/tests are unaffected.
+    is_live: bool = False
 
 
 def _session_dir(email: str) -> Path:
@@ -136,6 +179,7 @@ def _to_remote_asset(asset: object) -> RemoteAsset:
         captured_at=_aware_utc(asset.created),
         size=size,
         media_type=_media_type(item_type),
+        is_live=bool(getattr(asset, "is_live_photo", False)),
     )
 
 
@@ -277,3 +321,29 @@ class ICloudClient:
         except OSError as exc:
             tmp_path.unlink(missing_ok=True)
             raise ICloudError(f"Writing downloaded iCloud asset {remote_id} failed: {exc}") from exc
+
+    def download_live_video(self, remote_id: str, dest: Path) -> bool:
+        """Fetch a Live Photo's paired video component to `dest` (T20, SPEC
+        §18). Returns False -- nothing written -- when the asset isn't a
+        Live Photo (or, defensively, when `is_live_photo` is True but the
+        "original_video" resource still isn't present -- see module
+        docstring, this shouldn't normally happen since both gate on the
+        same underlying field). Raises `ICloudError` when the asset IS a
+        Live Photo but the video component can't be fetched/written -- same
+        atomic `.part` + `os.replace` semantics as `download()`, which this
+        reuses directly (see module docstring: `"original_video"` downloads
+        through the identical pyicloud code path as every other version).
+        """
+        asset = self._find_asset(remote_id)
+        if not getattr(asset, "is_live_photo", False):
+            return False
+
+        try:
+            available = asset.versions
+        except _PYICLOUD_ERRORS as exc:
+            raise ICloudError(f"Could not read versions for {remote_id}: {exc}") from exc
+        if "original_video" not in available:
+            return False
+
+        self.download(remote_id, "original_video", dest)
+        return True

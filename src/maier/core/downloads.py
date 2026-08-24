@@ -10,18 +10,45 @@ scan.py/pull.py's own background-thread pattern): a "pending" item is any
 already recorded in that account's `state.downloaded` map. `enqueue_original`
 never blocks on the network -- it only ensures a single daemon worker thread
 is running; the actual download happens on that thread.
+
+T20 (CTO requirement, PLAN 2026-08-24 "Round 3"): iCloud HEIC/HEIF originals
+have no full-res JPEG rendition (probed live: medium tops out at ~1536px) --
+selecting one must still land a directly-usable full-res JPEG/PNG in
+`selected/`, EXIF preserved. This is a DELIBERATE exception to "what lands
+is the original" for iCloud downloads only -- local files (manual exports)
+are never touched, per CLAUDE.md hard rule 2 (moves only). Live Photos also
+fetch their video companion (`ICloudClient.download_live_video`) once the
+still lands.
 """
 
 from __future__ import annotations
 
+import os
 import threading
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath
 
 from django.db import connection
+from PIL import Image, UnidentifiedImageError
 
 from . import moves, remote_state
 from .models import Photo
+
+try:
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+except ImportError:  # pillow-heif optional at runtime; HEIC just won't decode
+    pass
+
+# HEIC/HEIF originals get converted (T20); every other extension (JPG, PNG,
+# DNG/RAW, videos) downloads unchanged, as before.
+_HEIC_EXTENSIONS = {".heic", ".heif"}
+_JPEG_QUALITY = 92
+
+# Named tuple (not an inline `except (A, B, C):` literal) -- ruff 0.16.4
+# formatter bug, see previews.py/icloud.py for the same workaround.
+_HEIC_CONVERSION_ERRORS = (OSError, UnidentifiedImageError, ValueError)
 
 
 @dataclass
@@ -85,16 +112,20 @@ def _pending_rows(folder: Path) -> list[Photo]:
     return filtered
 
 
-def _dest_for(folder: Path, photo: Photo, slug: str) -> Path:
+def _remote_filename(photo: Photo) -> str:
     filename = PurePosixPath(photo.remote_filename).name if photo.remote_filename else ""
     if not filename:
         filename = f"{photo.remote_id}.jpg"
+    return filename
+
+
+def _dest_for(folder: Path, photo: Photo, slug: str) -> Path:
     dest_dir = folder / "selected" / slug
     # `moves._unique_path` is a private helper (flagged, per brief): reused
     # here rather than duplicated so the collision-suffix rule (SPEC §3/§4:
     # " (n)" before the extension, never overwrite) stays a single
     # implementation shared by ordinary moves and remote downloads.
-    return moves._unique_path(dest_dir / filename)
+    return moves._unique_path(dest_dir / _remote_filename(photo))
 
 
 def _convert_to_local(photo: Photo, dest: Path, folder: Path, slug: str) -> None:
@@ -113,15 +144,155 @@ def _convert_to_local(photo: Photo, dest: Path, folder: Path, slug: str) -> None
     )
 
 
-def _download_one(folder: Path, client, photo: Photo, progress: DownloadProgress) -> None:
-    slug = remote_state.account_slug(photo.account)
-    dest = _dest_for(folder, photo, slug)
+def _staging_dir(folder: Path) -> Path:
+    # Same volume as `selected/{slug}/` (both under the working folder), so
+    # the conversion step's `os.replace` from here into `selected/` is a
+    # same-volume rename -- not a system temp dir, which could be a
+    # different filesystem (T20 brief: "download to a TEMP file, not into
+    # selected/" -- staged as a hidden file under `.maier/`, never visible
+    # in Finder alongside real selections).
+    d = folder / ".maier" / "tmp"
+    d.mkdir(parents=True, exist_ok=True)
+    return d
 
+
+def _convert_heic_to_dest(src: Path, dest_stem: str, dest_dir: Path) -> Path:
+    """Convert a downloaded HEIC/HEIF original to a full-res JPEG (or PNG
+    when the image has an alpha channel), EXIF preserved, at full original
+    resolution (no `.thumbnail()` resize -- unlike `previews.py`, this is
+    the deliverable, not a preview). Deliberately does NOT call
+    `ImageOps.exif_transpose`: this is a faithful pixel conversion that
+    keeps the original EXIF orientation tag intact, not a display-baked
+    preview -- viewers already honor EXIF orientation. Returns the final
+    (collision-suffixed) destination path; raises on failure (caller
+    decides the HEIC-fallback policy).
+    """
+    with Image.open(src) as img:
+        exif_bytes = img.info.get("exif")
+        if img.mode in ("RGBA", "LA", "PA"):
+            candidate = moves._unique_path(dest_dir / f"{dest_stem}.png")
+            fmt = "PNG"
+            # Pillow >= 9 supports exif= for PNG too (verified against the
+            # pinned Pillow version, 2026-08-24); no fallback needed here.
+            save_kwargs: dict = {"exif": exif_bytes} if exif_bytes else {}
+        else:
+            if img.mode != "RGB":
+                img = img.convert("RGB")
+            candidate = moves._unique_path(dest_dir / f"{dest_stem}.jpg")
+            fmt = "JPEG"
+            save_kwargs = {"quality": _JPEG_QUALITY}
+            if exif_bytes:
+                save_kwargs["exif"] = exif_bytes
+
+        tmp = candidate.parent / f"{candidate.name}.part"
+        try:
+            img.save(tmp, fmt, **save_kwargs)
+        except Exception:
+            tmp.unlink(missing_ok=True)
+            raise
+
+    os.replace(tmp, candidate)
+    return candidate
+
+
+def _download_and_convert_heic(
+    folder: Path,
+    client,
+    photo: Photo,
+    filename: str,
+    dest_dir: Path,
+    progress: DownloadProgress,
+) -> Path | None:
+    """Download a HEIC/HEIF original to a staging file, convert it, and
+    return the final destination path. Returns None (error already
+    recorded) if the download itself failed. Conversion failure falls back
+    to saving the HEIC original as-is under its own name -- an error is
+    still recorded so the fallback is visible, but a HEIC in `selected/`
+    beats nothing landing at all (T20 brief).
+    """
+    staging = _staging_dir(folder) / f"{photo.remote_id}{Path(filename).suffix.lower()}"
     try:
-        client.download(photo.remote_id, "original", dest)
+        client.download(photo.remote_id, "original", staging)
     except Exception as exc:  # per-item errors never abort the worker run
         progress.errors.append(f"{photo.remote_id}: {exc}")
+        return None
+
+    dest_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        return _convert_heic_to_dest(staging, Path(filename).stem, dest_dir)
+    except _HEIC_CONVERSION_ERRORS as exc:
+        progress.errors.append(
+            f"{photo.remote_id}: HEIC conversion failed ({exc}) -- saved original HEIC instead"
+        )
+        fallback_dest = moves._unique_path(dest_dir / filename)
+        os.replace(staging, fallback_dest)
+        return fallback_dest
+    finally:
+        staging.unlink(missing_ok=True)
+
+
+def _handle_live_photo(
+    folder: Path, client, photo: Photo, slug: str, still_dest: Path, progress: DownloadProgress
+) -> None:
+    """After a still image lands (converted or not), fetch its Live Photo
+    video companion (T20, SPEC §18/CLAUDE.md rule 3). `client` may be a test
+    double without `download_live_video` (older fakes) -- treated as "no
+    live video available", not an error. Best-effort: on any failure the
+    still image is left intact and an error is recorded; retry is NOT
+    automatic (flagged gap, per brief) -- the row is already `source=
+    "local"` by this point, so nothing will re-enqueue this photo.
+    """
+    if not hasattr(client, "download_live_video"):
         return
+
+    video_dest = moves._unique_path(still_dest.parent / f"{still_dest.stem}.mov")
+    try:
+        wrote = client.download_live_video(photo.remote_id, video_dest)
+    except Exception as exc:
+        progress.errors.append(f"{photo.remote_id}: live video fetch failed: {exc}")
+        return
+    if not wrote:
+        return
+
+    try:
+        st = video_dest.stat()
+        rel_video = video_dest.relative_to(folder).as_posix()
+        Photo.objects.filter(pk=photo.pk).update(live_photo_video_path=rel_video)
+        # A brand-new local file with no Photo row of its own yet -- create
+        # one so scan/queries stay consistent (it's hidden as a companion
+        # by the existing `live_photo_companion_paths` exclusion, same as
+        # any local Live Photo's .mov).
+        Photo.objects.create(
+            source=Photo.SOURCE_LOCAL,
+            relative_path=rel_video,
+            status=Photo.STATUS_SELECTED,
+            provenance=slug,
+            file_size=st.st_size,
+            file_mtime=st.st_mtime,
+            captured_at=photo.captured_at,
+            captured_at_source="exif",
+            media_type=Photo.MEDIA_VIDEO,
+        )
+    except Exception as exc:
+        progress.errors.append(f"{photo.remote_id}: live video row bookkeeping failed: {exc}")
+
+
+def _download_one(folder: Path, client, photo: Photo, progress: DownloadProgress) -> None:
+    slug = remote_state.account_slug(photo.account)
+    filename = _remote_filename(photo)
+
+    if Path(filename).suffix.lower() in _HEIC_EXTENSIONS:
+        dest_dir = folder / "selected" / slug
+        dest = _download_and_convert_heic(folder, client, photo, filename, dest_dir, progress)
+        if dest is None:
+            return  # download itself failed; error already recorded
+    else:
+        dest = _dest_for(folder, photo, slug)
+        try:
+            client.download(photo.remote_id, "original", dest)
+        except Exception as exc:  # per-item errors never abort the worker run
+            progress.errors.append(f"{photo.remote_id}: {exc}")
+            return
 
     try:
         _convert_to_local(photo, dest, folder, slug)
@@ -132,6 +303,9 @@ def _download_one(folder: Path, client, photo: Photo, progress: DownloadProgress
         progress.done += 1
     except Exception as exc:
         progress.errors.append(f"{photo.remote_id}: post-download bookkeeping failed: {exc}")
+        return
+
+    _handle_live_photo(folder, client, photo, slug, dest, progress)
 
 
 def _worker_loop(folder: Path, progress: DownloadProgress) -> None:

@@ -9,6 +9,7 @@ default wrapped-in-one-transaction mode).
 
 from __future__ import annotations
 
+import io
 import threading
 import time
 from dataclasses import dataclass
@@ -16,11 +17,39 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+from PIL import Image
 
-from maier.core import downloads, remote_state
+from maier.core import downloads, moves, queries, remote_state
 from maier.core.models import Photo
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
+
+
+def _heic_bytes(
+    size: tuple[int, int] = (800, 600),
+    color: tuple[int, int, int] = (10, 20, 30),
+    alpha: bool = False,
+    datetime_original: str | None = "2021:05:06 07:08:09",
+) -> bytes:
+    """Real HEIC bytes via pillow-heif's encoder (verified reliable in this
+    environment, per T20 brief's fallback guidance -- so tests exercise the
+    real conversion path, not a monkeypatched seam).
+    """
+    import pillow_heif
+
+    pillow_heif.register_heif_opener()
+
+    mode = "RGBA" if alpha else "RGB"
+    fill = (*color, 128) if alpha else color
+    img = Image.new(mode, size, fill)
+    kwargs: dict = {"quality": 90}
+    if datetime_original:
+        exif = Image.Exif()
+        exif[0x9003] = datetime_original  # DateTimeOriginal
+        kwargs["exif"] = exif.tobytes()
+    buf = io.BytesIO()
+    img.save(buf, "HEIF", **kwargs)
+    return buf.getvalue()
 
 
 def _remote_photo(remote_id: str, account: str = "luis@example.com", **overrides) -> Photo:
@@ -45,18 +74,46 @@ def _remote_photo(remote_id: str, account: str = "luis@example.com", **overrides
 
 
 class FakeClient:
-    def __init__(self, account: str, payload: bytes = b"orig", fail_ids: set[str] | None = None):
+    def __init__(
+        self,
+        account: str,
+        payload: bytes = b"orig",
+        fail_ids: set[str] | None = None,
+        payloads: dict[str, bytes] | None = None,
+        live_ids: set[str] | None = None,
+        live_payload: bytes = b"live-video-bytes",
+        live_fail_ids: set[str] | None = None,
+    ):
         self.account = account
         self.payload = payload
         self.fail_ids = fail_ids or set()
+        self.payloads = payloads or {}
+        # T20: Live Photo video companion support. `live_ids` = remote_ids
+        # that ARE live photos (download_live_video writes bytes, returns
+        # True); anything else returns False (not a live photo) -- matches
+        # `ICloudClient.download_live_video`'s real contract.
+        self.live_ids = live_ids or set()
+        self.live_payload = live_payload
+        self.live_fail_ids = live_fail_ids or set()
         self.calls: list[tuple[str, str]] = []
+        self.live_calls: list[str] = []
 
     def download(self, remote_id, version, dest):
         self.calls.append((remote_id, version))
         if remote_id in self.fail_ids:
             raise RuntimeError(f"simulated download failure for {remote_id}")
         dest.parent.mkdir(parents=True, exist_ok=True)
-        dest.write_bytes(self.payload)
+        dest.write_bytes(self.payloads.get(remote_id, self.payload))
+
+    def download_live_video(self, remote_id, dest):
+        self.live_calls.append(remote_id)
+        if remote_id in self.live_fail_ids:
+            raise RuntimeError(f"simulated live video failure for {remote_id}")
+        if remote_id not in self.live_ids:
+            return False
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(self.live_payload)
+        return True
 
 
 def _wait_for(predicate, timeout: float = 5) -> None:
@@ -364,3 +421,215 @@ def test_pull_does_not_resurrect_row_after_successful_download(tmp_path):
     local_photo.refresh_from_db()
     assert local_photo.source == Photo.SOURCE_LOCAL
     assert local_photo.relative_path == f"selected/{slug}/a.jpg"
+
+
+# --- T20: HEIC -> full-res JPEG/PNG conversion, EXIF preserved --------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_heic_select_converts_to_full_res_jpeg_with_exif_preserved(tmp_path, monkeypatch):
+    heic = _heic_bytes(size=(800, 600), datetime_original="2021:05:06 07:08:09")
+    client = FakeClient("luis@example.com", payloads={"r1": heic})
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="IMG_0001.HEIC")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    slug = remote_state.account_slug("luis@example.com")
+    dest = tmp_path / "selected" / slug / "IMG_0001.jpg"
+    assert photo.relative_path == f"selected/{slug}/IMG_0001.jpg"
+    assert dest.exists()
+    assert dest.read_bytes()[:2] == b"\xff\xd8"  # JPEG magic bytes
+
+    with Image.open(dest) as img:
+        assert img.format == "JPEG"
+        assert img.size == (800, 600)  # full resolution, not a downscaled preview
+        assert img.getexif().get(0x9003) == "2021:05:06 07:08:09"
+
+    state = remote_state.load_state(tmp_path, "luis@example.com")
+    assert state.downloaded == {"r1": f"selected/{slug}/IMG_0001.jpg"}
+    assert downloads._last_progress is not None
+    assert downloads._last_progress.errors == []
+
+
+@pytest.mark.django_db(transaction=True)
+def test_heic_select_is_case_insensitive_on_extension(tmp_path, monkeypatch):
+    client = FakeClient("luis@example.com", payloads={"r1": _heic_bytes()})
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="img.heif")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    slug = remote_state.account_slug("luis@example.com")
+    assert photo.relative_path == f"selected/{slug}/img.jpg"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_heic_alpha_converts_to_png(tmp_path, monkeypatch):
+    heic = _heic_bytes(size=(400, 300), alpha=True, datetime_original=None)
+    client = FakeClient("luis@example.com", payloads={"r1": heic})
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="alpha.heic")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    slug = remote_state.account_slug("luis@example.com")
+    dest = tmp_path / "selected" / slug / "alpha.png"
+    assert photo.relative_path == f"selected/{slug}/alpha.png"
+    assert dest.exists()
+    assert dest.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
+    with Image.open(dest) as img:
+        assert img.format == "PNG"
+        assert img.size == (400, 300)
+        assert img.mode == "RGBA"
+
+
+@pytest.mark.django_db(transaction=True)
+def test_heic_conversion_failure_falls_back_to_original_heic(tmp_path, monkeypatch):
+    garbage = b"not a real heic file" * 20
+    client = FakeClient("luis@example.com", payloads={"r1": garbage})
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="broken.heic")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    slug = remote_state.account_slug("luis@example.com")
+    dest = tmp_path / "selected" / slug / "broken.heic"
+    assert photo.relative_path == f"selected/{slug}/broken.heic"
+    assert dest.exists()
+    assert dest.read_bytes() == garbage
+
+    assert downloads._last_progress is not None
+    assert any("r1" in e and "HEIC conversion failed" in e for e in downloads._last_progress.errors)
+    # staging file cleaned up, not left behind under .maier/tmp/
+    assert not any((tmp_path / ".maier" / "tmp").glob("*"))
+
+
+@pytest.mark.django_db(transaction=True)
+def test_non_heic_original_download_is_unconverted(tmp_path, monkeypatch):
+    client = FakeClient("luis@example.com", payloads={"r1": b"plain-jpeg-bytes"})
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="plain.jpg")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    slug = remote_state.account_slug("luis@example.com")
+    dest = tmp_path / "selected" / slug / "plain.jpg"
+    assert photo.relative_path == f"selected/{slug}/plain.jpg"
+    assert dest.read_bytes() == b"plain-jpeg-bytes"
+
+
+# --- T20: Live Photo video companion -----------------------------------------
+
+
+@pytest.mark.django_db(transaction=True)
+def test_live_photo_downloads_video_creates_row_sets_path_hides_companion(tmp_path, monkeypatch):
+    client = FakeClient("luis@example.com", live_ids={"r1"})
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="IMG_0002.jpg")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    slug = remote_state.account_slug("luis@example.com")
+    assert photo.live_photo_video_path == f"selected/{slug}/IMG_0002.mov"
+    video_path = tmp_path / "selected" / slug / "IMG_0002.mov"
+    assert video_path.exists()
+    assert video_path.read_bytes() == client.live_payload
+    assert client.live_calls == ["r1"]
+
+    companion = Photo.objects.get(relative_path=photo.live_photo_video_path)
+    assert companion.source == Photo.SOURCE_LOCAL
+    assert companion.status == Photo.STATUS_SELECTED
+    assert companion.media_type == Photo.MEDIA_VIDEO
+    assert companion.provenance == slug
+    assert companion.captured_at == photo.captured_at
+    assert companion.captured_at_source == "exif"
+    assert companion.file_size == video_path.stat().st_size
+
+    visible_pks = set(queries.filtered_photos({}).values_list("pk", flat=True))
+    assert photo.pk in visible_pks
+    assert companion.pk not in visible_pks
+
+
+@pytest.mark.django_db(transaction=True)
+def test_live_photo_video_failure_records_error_still_image_intact(tmp_path, monkeypatch):
+    client = FakeClient("luis@example.com", live_ids={"r1"}, live_fail_ids={"r1"})
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="IMG_0003.jpg")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    slug = remote_state.account_slug("luis@example.com")
+    assert not photo.live_photo_video_path
+    assert (tmp_path / "selected" / slug / "IMG_0003.jpg").exists()
+
+    assert downloads._last_progress is not None
+    assert any(
+        "r1" in e and "live video fetch failed" in e for e in downloads._last_progress.errors
+    )
+
+
+@pytest.mark.django_db(transaction=True)
+def test_non_live_photo_never_calls_download_live_video_write_path(tmp_path, monkeypatch):
+    client = FakeClient("luis@example.com")  # live_ids empty -> not a live photo
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="plain.jpg")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    assert not photo.live_photo_video_path
+    assert client.live_calls == ["r1"]  # called (best-effort) but wrote nothing
+    slug = remote_state.account_slug("luis@example.com")
+    assert not (tmp_path / "selected" / slug / "plain.mov").exists()
+
+
+@pytest.mark.django_db(transaction=True)
+def test_unflag_round_trip_moves_converted_jpg_and_mov_companion(tmp_path, monkeypatch):
+    client = FakeClient("luis@example.com", payloads={"r1": _heic_bytes()}, live_ids={"r1"})
+    monkeypatch.setattr(downloads, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r1", status=Photo.STATUS_SELECTED, remote_filename="IMG_0004.HEIC")
+
+    downloads.enqueue_original(tmp_path, photo)
+    _wait_for(lambda: Photo.objects.get(pk=photo.pk).source == Photo.SOURCE_LOCAL)
+    downloads._worker_thread.join(timeout=5)
+
+    photo.refresh_from_db()
+    slug = remote_state.account_slug("luis@example.com")
+    assert photo.relative_path == f"selected/{slug}/IMG_0004.jpg"
+    assert photo.live_photo_video_path == f"selected/{slug}/IMG_0004.mov"
+
+    moves.apply_status(tmp_path, photo, Photo.STATUS_OPTIONAL)
+
+    assert photo.relative_path == f"{slug}/IMG_0004.jpg"
+    assert (tmp_path / slug / "IMG_0004.jpg").exists()
+    assert not (tmp_path / "selected" / slug / "IMG_0004.jpg").exists()
+    assert photo.live_photo_video_path == f"{slug}/IMG_0004.mov"
+    assert (tmp_path / slug / "IMG_0004.mov").exists()
+    assert not (tmp_path / "selected" / slug / "IMG_0004.mov").exists()
+
+    companion = Photo.objects.get(relative_path=f"{slug}/IMG_0004.mov")
+    assert companion.status == Photo.STATUS_OPTIONAL

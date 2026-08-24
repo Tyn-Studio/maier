@@ -29,6 +29,9 @@ class FakeAsset:
         versions: dict | None = None,
         download_bytes: bytes = b"",
         download_error: Exception | None = None,
+        is_live_photo: bool = False,
+        live_video_bytes: bytes = b"",
+        live_video_error: Exception | None = None,
     ) -> None:
         self.id = id
         self.filename = filename
@@ -40,8 +43,15 @@ class FakeAsset:
         )
         self._download_bytes = download_bytes
         self._download_error = download_error
+        self.is_live_photo = is_live_photo
+        self._live_video_bytes = live_video_bytes
+        self._live_video_error = live_video_error
 
     def download(self, version: str) -> bytes | None:
+        if version == "original_video":
+            if self._live_video_error is not None:
+                raise self._live_video_error
+            return self._live_video_bytes
         if self._download_error is not None:
             raise self._download_error
         return self._download_bytes
@@ -493,6 +503,118 @@ def test_download_no_data_raises_icloud_error(monkeypatch, tmp_path):
     assert not dest.exists()
 
 
+# --- list_assets: is_live (T20) -------------------------------------------
+
+
+def test_list_assets_captures_is_live_flag(monkeypatch):
+    assets = [
+        FakeAsset(
+            "a1",
+            "IMG_0001.jpg",
+            datetime(2026, 1, 1, tzinfo=UTC),
+            5,
+            "image",
+            is_live_photo=True,
+        ),
+        FakeAsset("a2", "IMG_0002.jpg", datetime(2026, 1, 1, tzinfo=UTC), 5, "image"),
+    ]
+    client = _client_with_assets(monkeypatch, assets)
+
+    results = list(client.list_assets(since=None))
+
+    assert results[0].is_live is True
+    assert results[1].is_live is False
+
+
+# --- download_live_video (T20) ---------------------------------------------
+
+
+def test_download_live_video_returns_false_when_not_live_photo(monkeypatch, tmp_path):
+    assets = [
+        FakeAsset("a1", "a.jpg", datetime(2026, 1, 1, tzinfo=UTC), 5, "image", is_live_photo=False)
+    ]
+    client = _client_with_assets(monkeypatch, assets)
+    list(client.list_assets(since=None))
+
+    dest = tmp_path / "a.mov"
+    assert client.download_live_video("a1", dest) is False
+    assert not dest.exists()
+
+
+def test_download_live_video_writes_bytes_and_returns_true(monkeypatch, tmp_path):
+    assets = [
+        FakeAsset(
+            "a1",
+            "a.jpg",
+            datetime(2026, 1, 1, tzinfo=UTC),
+            5,
+            "image",
+            is_live_photo=True,
+            versions={"thumb": {}, "medium": {}, "original": {}, "original_video": {}},
+            live_video_bytes=b"movie-bytes",
+        )
+    ]
+    client = _client_with_assets(monkeypatch, assets)
+    list(client.list_assets(since=None))
+
+    dest = tmp_path / "a.mov"
+    assert client.download_live_video("a1", dest) is True
+    assert dest.read_bytes() == b"movie-bytes"
+    assert not (dest.parent / "a.mov.part").exists()
+
+
+def test_download_live_video_returns_false_when_resource_missing_despite_flag(
+    monkeypatch, tmp_path
+):
+    # Defensive branch: is_live_photo True but "original_video" absent from
+    # .versions shouldn't normally happen (both gate on the same underlying
+    # CloudKit field -- see module docstring) but must degrade gracefully.
+    assets = [
+        FakeAsset(
+            "a1",
+            "a.jpg",
+            datetime(2026, 1, 1, tzinfo=UTC),
+            5,
+            "image",
+            is_live_photo=True,
+            versions={"thumb": {}, "medium": {}, "original": {}},
+        )
+    ]
+    client = _client_with_assets(monkeypatch, assets)
+    list(client.list_assets(since=None))
+
+    assert client.download_live_video("a1", tmp_path / "a.mov") is False
+
+
+def test_download_live_video_wraps_download_failure_as_icloud_error(monkeypatch, tmp_path):
+    assets = [
+        FakeAsset(
+            "a1",
+            "a.jpg",
+            datetime(2026, 1, 1, tzinfo=UTC),
+            5,
+            "image",
+            is_live_photo=True,
+            versions={"thumb": {}, "medium": {}, "original": {}, "original_video": {}},
+            live_video_error=PyiCloudAPIResponseException("boom", 500),
+        )
+    ]
+    client = _client_with_assets(monkeypatch, assets)
+    list(client.list_assets(since=None))
+
+    dest = tmp_path / "a.mov"
+    with pytest.raises(icloud.ICloudError):
+        client.download_live_video("a1", dest)
+    assert not dest.exists()
+
+
+def test_download_live_video_unknown_asset_raises_icloud_error(monkeypatch, tmp_path):
+    client = _client_with_assets(monkeypatch, [])
+
+    with pytest.raises(icloud.ICloudError):
+        client.download_live_video("missing", tmp_path / "a.mov")
+
+
 # --- account_slug -----------------------------------------------------
 
 
@@ -523,12 +645,19 @@ def test_public_surface_is_read_only():
         for name in dir(icloud.ICloudClient)
         if not name.startswith("_") and callable(getattr(icloud.ICloudClient, name))
     }
-    assert public_callables == {"login", "from_session", "submit_2fa", "list_assets", "download"}
+    assert public_callables == {
+        "login",
+        "from_session",
+        "submit_2fa",
+        "list_assets",
+        "download",
+        "download_live_video",
+    }
 
 
 def test_remote_asset_is_a_plain_dataclass_with_no_methods():
     field_names = {f for f in icloud.RemoteAsset.__dataclass_fields__}
-    assert field_names == {"remote_id", "filename", "captured_at", "size", "media_type"}
+    assert field_names == {"remote_id", "filename", "captured_at", "size", "media_type", "is_live"}
 
 
 def test_module_defines_no_delete_or_write_helpers():
