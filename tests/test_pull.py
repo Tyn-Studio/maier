@@ -86,8 +86,9 @@ def test_pull_creates_photo_rows_with_correct_fields(tmp_path):
 
     assert progress.finished is True
     assert progress.errors == []
-    # Two-phase accounting: 2 metadata upserts + 2 preview fetches.
-    assert progress.total == progress.done == 4
+    # scanned = assets enumerated; total/done = preview fetches only.
+    assert progress.scanned == 2
+    assert progress.total == progress.done == 2
 
     p1 = Photo.objects.get(account="luis@example.com", remote_id="r1")
     assert p1.source == Photo.SOURCE_ICLOUD
@@ -201,7 +202,8 @@ def test_incremental_second_pull_only_processes_unknown_remote_ids(tmp_path):
     pull_account(tmp_path, client, progress)
 
     assert client.since_calls == [None, None]
-    assert progress.total == progress.done == 2  # r3's metadata + r3's preview
+    assert progress.scanned == 3  # full enumeration always scans everything
+    assert progress.total == progress.done == 1  # but only r3's preview is fetched
     assert Photo.objects.count() == 3
     assert Photo.objects.filter(remote_id="r3").exists()
 
@@ -298,7 +300,7 @@ def test_per_asset_download_failure_recorded_but_pull_completes(tmp_path):
     pull_account(tmp_path, client, progress)
 
     assert progress.finished is True
-    assert progress.done == 4  # 2 metadata upserts + 2 preview attempts
+    assert progress.done == 2  # both preview attempts completed (one failed)
     assert any("r1" in e for e in progress.errors)
 
     # The Photo row still got created (upsert happens before download).
@@ -329,17 +331,18 @@ def test_repull_is_idempotent_no_duplicate_rows(tmp_path):
 
 
 @pytest.mark.django_db
-def test_progress_streams_metadata_then_counts_previews(tmp_path):
-    # Phase 1 streams metadata with total unknown (0); phase 2 sets total to
-    # metadata-done + preview backlog. Final: 3 upserts + 3 previews.
+def test_progress_counts_scanned_and_previews_separately(tmp_path):
+    # scanned tracks the enumeration; total/done track preview fetches,
+    # which run concurrently with the enumeration on a shared pool.
     assets = [_asset("r1", T0), _asset("r2", T1), _asset("r3", T2)]
     client = FakeClient("luis@example.com", [assets])
     progress = PullProgress()
 
     pull_account(tmp_path, client, progress)
 
-    assert progress.total == 6
-    assert progress.done == 6
+    assert progress.scanned == 3
+    assert progress.total == 3
+    assert progress.done == 3
 
 
 # --- background / single-flight ---------------------------------------------

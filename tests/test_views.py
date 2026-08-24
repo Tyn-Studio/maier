@@ -1456,11 +1456,12 @@ def test_t18_account_pull_expired_session_shows_error_no_pull_started(client, mo
 @pytest.mark.django_db
 def test_t18_pull_status_in_flight_renders_progress_partial(client):
     email = "t_t18_pullstatus_inflight@example.com"
-    pull_module._current_pulls[email] = PullProgress(account=email, total=5, done=2)
+    pull_module._current_pulls[email] = PullProgress(account=email, scanned=120, total=5, done=2)
     try:
         response = client.get(reverse("pull-status"), {"account": email})
         body = response.content.decode()
-        assert "Fetching previews 2 / 5" in body
+        assert "120 scanned" in body
+        assert "previews 2 / 5" in body
         assert "load delay:2s" in body
     finally:
         pull_module._current_pulls.pop(email, None)

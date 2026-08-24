@@ -37,8 +37,9 @@ if TYPE_CHECKING:
 @dataclass
 class PullProgress:
     account: str = ""
-    total: int = 0
-    done: int = 0
+    scanned: int = 0  # assets enumerated this pull (known + new alike)
+    total: int = 0  # preview fetches queued so far (backlog + new items)
+    done: int = 0  # preview fetches completed
     errors: list[str] = field(default_factory=list)
     finished: bool = False
 
@@ -104,69 +105,72 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
             .values_list("remote_id", flat=True)
         )
 
-        # Phase 1 -- STREAMING metadata: rows are upserted while the
-        # enumeration is still running, so the timeline fills progressively
-        # (with placeholder previews) instead of staying empty for the many
-        # minutes a large library takes to enumerate (real-library finding,
-        # 2026-08-24: ~30 assets/s, 10k+ items). `progress.total` stays 0
-        # during this phase -- the library size is unknown until the
-        # enumeration ends; the banner shows a plain running count.
-        #
-        # Deliberately NOT filtered by the cursor: iCloud libraries gain OLD
-        # photos later (device syncs, imports), and a capture-date filter
-        # would hide those forever. The web API enumerates all metadata
-        # regardless (no server-side date filter). "Incremental" per SPEC
-        # §18 = skip already-known remote_ids and re-downloads.
-        iteration_failed = False
-        max_captured_at: datetime | None = state.cursor
-        try:
-            for asset in client.list_assets(since=None):
-                if asset.remote_id in known_ids or asset.remote_id in state.downloaded:
-                    continue
-                try:
-                    _process_asset(folder, client, state, asset)
-                    known_ids.add(asset.remote_id)
-                    if max_captured_at is None or asset.captured_at > max_captured_at:
-                        max_captured_at = asset.captured_at
-                except Exception as exc:  # per-asset errors never abort the pull
-                    progress.errors.append(f"{asset.remote_id}: {exc}")
-                finally:
-                    progress.done += 1
-        except Exception as exc:
-            progress.errors.append(f"list_assets: {exc}")
-            iteration_failed = True
+        counters_lock = threading.Lock()
 
-        # Phase 2 -- previews for every row that lacks one: both the rows
-        # just created and older rows whose fetch previously failed or whose
-        # .maier/ cache was wiped (the original "repair pass", now the sole
-        # preview path -- metadata streaming above never blocks on preview
-        # downloads). total becomes meaningful here: metadata done so far
-        # plus the known preview backlog.
-        preview_ids = [
+        def _fetch_preview(rid: str) -> None:
+            err = None
+            try:
+                dest = previews_module.remote_preview_dest(folder, client.account, rid)
+                if not dest.exists():
+                    client.download(rid, "medium", dest)
+            except Exception as exc:
+                err = f"{rid}: preview fetch failed: {exc}"
+            with counters_lock:
+                progress.done += 1
+                if err is not None:
+                    progress.errors.append(err)
+
+        # Single concurrent pass (real-library findings, 2026-08-24: ~30
+        # assets/s enumeration, 41k items, hours of serial previews):
+        #  - the enumeration thread streams metadata, upserting new rows as
+        #    they arrive so the timeline fills progressively;
+        #  - four preview workers run THROUGHOUT, starting immediately on
+        #    the known backlog (rows whose preview never landed -- failed
+        #    fetch, wiped .maier/, or an interrupted earlier pull) and
+        #    picking up each new row as it's discovered. A re-pull after an
+        #    interruption therefore shows thumbnails right away instead of
+        #    after another full enumeration. The workers share the client's
+        #    one requests.Session -- urllib3's pool handles concurrent use.
+        #
+        # The enumeration is deliberately NOT filtered by the cursor: iCloud
+        # libraries gain OLD photos later (device syncs, imports), and a
+        # capture-date filter would hide those forever. "Incremental" per
+        # SPEC §18 = skip already-known remote_ids and re-downloads.
+        backlog = [
             rid
             for rid in sorted(known_ids)
             if not previews_module.remote_preview_dest(folder, client.account, rid).exists()
         ]
-        progress.total = progress.done + len(preview_ids)
 
-        def _fetch_preview(rid: str) -> str | None:
-            try:
-                dest = previews_module.remote_preview_dest(folder, client.account, rid)
-                client.download(rid, "medium", dest)
-                return None
-            except Exception as exc:
-                return f"{rid}: preview fetch failed: {exc}"
-
-        # Modest parallelism: serial fetching of a real library's preview
-        # backlog measured in hours (41k items, 2026-08-24). Four workers
-        # share the client's one requests.Session -- urllib3's pool handles
-        # concurrent use; failures are per-item and the next pull's backlog
-        # scan retries them.
+        iteration_failed = False
+        max_captured_at: datetime | None = state.cursor
         with ThreadPoolExecutor(max_workers=4) as pool:
-            for error in pool.map(_fetch_preview, preview_ids):
-                if error is not None:
-                    progress.errors.append(error)
-                progress.done += 1
+            with counters_lock:
+                progress.total += len(backlog)
+            for rid in backlog:
+                pool.submit(_fetch_preview, rid)
+
+            try:
+                for asset in client.list_assets(since=None):
+                    with counters_lock:
+                        progress.scanned += 1
+                    if asset.remote_id in known_ids or asset.remote_id in state.downloaded:
+                        continue
+                    try:
+                        _process_asset(folder, client, state, asset)
+                        known_ids.add(asset.remote_id)
+                        if max_captured_at is None or asset.captured_at > max_captured_at:
+                            max_captured_at = asset.captured_at
+                    except Exception as exc:  # per-asset errors never abort the pull
+                        progress.errors.append(f"{asset.remote_id}: {exc}")
+                        continue
+                    with counters_lock:
+                        progress.total += 1
+                    pool.submit(_fetch_preview, asset.remote_id)
+            except Exception as exc:
+                progress.errors.append(f"list_assets: {exc}")
+                iteration_failed = True
+        # Pool context exit drains all queued preview fetches.
 
         # The cursor is an informational last-pull watermark (max capture
         # date fully processed) -- it no longer gates listing. Only advance
