@@ -5,8 +5,8 @@ from datetime import UTC, datetime
 import pytest
 from PIL import ExifTags, Image
 
-from culler.core import metadata as metadata_module
-from culler.core.metadata import capture_datetime
+from maier.core import metadata as metadata_module
+from maier.core.metadata import capture_datetime
 
 
 def _make_jpeg(

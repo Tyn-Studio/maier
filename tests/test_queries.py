@@ -3,8 +3,8 @@ from datetime import UTC, datetime
 import pytest
 from django.http import QueryDict
 
-from culler.core import queries
-from culler.core.models import Photo
+from maier.core import queries
+from maier.core.models import Photo
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 

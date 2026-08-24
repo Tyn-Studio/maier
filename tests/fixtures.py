@@ -13,7 +13,7 @@ from PIL import Image
 
 # Exif IFD pointer tag (0x8769) on the 0th IFD; DateTimeOriginal (36867)
 # lives inside that sub-IFD. Mirrors the fallback chain's own read path in
-# culler.core.metadata.
+# maier.core.metadata.
 _EXIF_IFD_TAG = 0x8769
 _DATETIME_ORIGINAL = 36867
 

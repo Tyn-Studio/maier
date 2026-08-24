@@ -2,10 +2,10 @@ name: Release
 
 # Triggered by pushing a tag like `v0.1.0`. Nothing in this workflow runs on
 # normal pushes/PRs (that's ci.yml) -- it is inert until a human tags a
-# release. Every publish step is currently disabled (`if: false`) pending
-# the name (SPEC §17.1) and license (SPEC §17.2) decisions; this workflow
-# will need a real run against a tag to shake out the PyInstaller/signing
-# specifics before it's trusted for an actual release.
+# release. The PyPI publish step is currently disabled (`if: false`) pending
+# an actual PyPI project + trusted-publishing setup; this workflow will need
+# a real run against a tag to shake out the PyInstaller/signing specifics
+# before it's trusted for an actual release.
 
 on:
   push:
@@ -13,7 +13,7 @@ on:
       - "v*"
 
 env:
-  CULLER_FORCE_NO_WINDOW: "1"
+  MAIER_FORCE_NO_WINDOW: "1"
 
 jobs:
   test:
@@ -58,19 +58,17 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          # TODO(name): rename this artifact (and the dist filenames inside
-          # it) once the PyPI project name changes from "culler".
-          name: culler-pypi-dist
+          name: maier-pypi-dist
           path: dist/
 
       - name: Publish to PyPI
-        # TODO(name+license): enable after the PyPI project "culler" (or its
-        # renamed successor) exists and a license is chosen. Needs either a
-        # PYPI_API_TOKEN repo secret or trusted publishing configured on the
-        # PyPI project settings (preferred -- no secret to manage; see
-        # https://docs.pypi.org/trusted-publishers/). skip-existing avoids
-        # failing the whole workflow if this version was already published.
-        if: false # TODO(name+license): enable after PyPI project exists
+        # TODO(release): enable after the PyPI project "maier" exists.
+        # Needs either a PYPI_API_TOKEN repo secret or trusted publishing
+        # configured on the PyPI project settings (preferred -- no secret to
+        # manage; see https://docs.pypi.org/trusted-publishers/).
+        # skip-existing avoids failing the whole workflow if this version
+        # was already published.
+        if: false # TODO(release): enable after PyPI project exists
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
@@ -98,23 +96,23 @@ jobs:
       # there are external users:
       #   macOS:   codesign + notarytool, needs APPLE_CERTIFICATE /
       #            APPLE_CERTIFICATE_PASSWORD / APPLE_TEAM_ID / an
-      #            app-specific password secret, wired into culler.spec's
+      #            app-specific password secret, wired into maier.spec's
       #            codesign_identity/entitlements_file.
       #   Windows: Authenticode signing, needs a WINDOWS_CERTIFICATE +
       #            WINDOWS_CERTIFICATE_PASSWORD secret (or Azure Trusted
       #            Signing) and a signtool step after PyInstaller runs.
       - name: Build bundle (PyInstaller)
-        run: uv run pyinstaller packaging/culler.spec
+        run: uv run pyinstaller packaging/maier.spec
 
       - name: Smoke test the built bundle (macOS)
         if: runner.os == 'macOS'
         run: |
-          python3 scripts/smoke_test.py "dist/Culler.app/Contents/MacOS/Culler" "$RUNNER_TEMP/smoke-folder" --timeout 40
+          python3 scripts/smoke_test.py "dist/Maier.app/Contents/MacOS/Maier" "$RUNNER_TEMP/smoke-folder" --timeout 40
 
       - name: Smoke test the built bundle (Linux)
         if: runner.os == 'Linux'
         run: |
-          python3 scripts/smoke_test.py "dist/Culler/Culler" "$RUNNER_TEMP/smoke-folder" --timeout 40
+          python3 scripts/smoke_test.py "dist/Maier/Maier" "$RUNNER_TEMP/smoke-folder" --timeout 40
 
       - name: Smoke test the built bundle (Windows)
         if: runner.os == 'Windows'
@@ -122,33 +120,31 @@ jobs:
         # WebView2 backend are best-effort here, not yet verified against a
         # real build -- expect to iterate on this step against a real tag.
         run: |
-          python scripts/smoke_test.py "dist\Culler\Culler.exe" "$env:RUNNER_TEMP\smoke-folder" --timeout 40
+          python scripts/smoke_test.py "dist\Maier\Maier.exe" "$env:RUNNER_TEMP\smoke-folder" --timeout 40
 
       - name: Package bundle for release
-        # TODO(name): asset naming below assumes "Culler"; rename alongside
-        # the product-name decision. Windows: a zipped exe for now --
-        # SPEC §13 mentions an Inno Setup installer as an alternative,
-        # not yet built. Linux: tarball placeholder -- AppImage packaging
-        # (SPEC §13) not yet implemented.
+        # Windows: a zipped exe for now -- SPEC §13 mentions an Inno Setup
+        # installer as an alternative, not yet built. Linux: tarball
+        # placeholder -- AppImage packaging (SPEC §13) not yet implemented.
         shell: bash
         run: |
           mkdir -p out
           case "${{ runner.os }}" in
             macOS)
-              ditto -c -k --sequesterRsrc --keepParent dist/Culler.app out/Culler-macos.zip
+              ditto -c -k --sequesterRsrc --keepParent dist/Maier.app out/Maier-macos.zip
               ;;
             Linux)
-              tar -C dist -czf out/Culler-linux.tar.gz Culler
+              tar -C dist -czf out/Maier-linux.tar.gz Maier
               ;;
             Windows)
-              powershell -Command "Compress-Archive -Path dist/Culler -DestinationPath out/Culler-windows.zip"
+              powershell -Command "Compress-Archive -Path dist/Maier -DestinationPath out/Maier-windows.zip"
               ;;
           esac
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: culler-bundle-${{ runner.os }}
+          name: maier-bundle-${{ runner.os }}
           path: out/
 
   publish-release:
@@ -157,7 +153,7 @@ jobs:
     steps:
       - uses: actions/download-artifact@v4
         with:
-          pattern: culler-bundle-*
+          pattern: maier-bundle-*
           path: artifacts
           merge-multiple: true
 

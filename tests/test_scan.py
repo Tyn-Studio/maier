@@ -9,9 +9,9 @@ from pathlib import Path
 import pytest
 from PIL import Image
 
-from culler.core import scan as scan_module
-from culler.core.models import Photo
-from culler.core.scan import ScanProgress, scan, start_background_scan
+from maier.core import scan as scan_module
+from maier.core.models import Photo
+from maier.core.scan import ScanProgress, scan, start_background_scan
 
 
 def _make_jpeg(path: Path, mtime: float | None = None) -> None:
@@ -33,8 +33,8 @@ def _build_tree(root: Path) -> None:
     (root / "notes.txt").parent.mkdir(parents=True, exist_ok=True)
     (root / "notes.txt").write_text("not media")
 
-    (root / ".culler").mkdir(parents=True, exist_ok=True)
-    (root / ".culler" / "culler.sqlite3").write_bytes(b"fake db, must be ignored")
+    (root / ".maier").mkdir(parents=True, exist_ok=True)
+    (root / ".maier" / "maier.sqlite3").write_bytes(b"fake db, must be ignored")
 
     (root / ".hidden").mkdir(parents=True, exist_ok=True)
     _make_jpeg(root / ".hidden" / "IMG_9999.jpg")

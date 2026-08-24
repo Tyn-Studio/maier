@@ -1,6 +1,6 @@
 from django.urls import path
 
-from culler.core import views
+from maier.core import views
 
 urlpatterns = [
     path("healthz", views.healthz, name="healthz"),

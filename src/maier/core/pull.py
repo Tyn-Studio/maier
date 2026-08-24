@@ -130,7 +130,7 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
         ]
 
         # Preview repair: rows from earlier pulls whose medium preview never
-        # landed (failed download, wiped .culler/ cache) get retried on
+        # landed (failed download, wiped .maier/ cache) get retried on
         # every pull rather than staying placeholders forever.
         repair_ids = [
             rid

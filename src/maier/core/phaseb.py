@@ -230,7 +230,7 @@ def _pair_live_photos(progress: PhaseBProgress) -> None:
     elsewhere in the working folder.
 
     Self-heals first: if an image's recorded companion path no longer
-    resolves to a non-missing Photo row (moved/renamed outside Culler),
+    resolves to a non-missing Photo row (moved/renamed outside Maier),
     clear it so it becomes eligible for re-pairing below.
     """
     try:

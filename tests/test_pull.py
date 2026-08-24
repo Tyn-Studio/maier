@@ -12,11 +12,11 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from culler.core import pull as pull_module
-from culler.core import remote_state
-from culler.core.models import Photo
-from culler.core.previews import remote_preview_dest
-from culler.core.pull import PullProgress, pull_account, start_background_pull
+from maier.core import pull as pull_module
+from maier.core import remote_state
+from maier.core.models import Photo
+from maier.core.previews import remote_preview_dest
+from maier.core.pull import PullProgress, pull_account, start_background_pull
 
 
 @dataclass

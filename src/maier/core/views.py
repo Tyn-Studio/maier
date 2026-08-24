@@ -148,7 +148,7 @@ def set_status(request, pk):
     except ValueError:
         return HttpResponse("invalid status", status=400)
     except FileNotFoundError:
-        return HttpResponse("file moved or deleted outside Culler", status=409)
+        return HttpResponse("file moved or deleted outside Maier", status=409)
     except culling.AccountSessionExpired as exc:
         # Not currently raised (see culling.py's docstring) -- kept so a
         # future synchronous session check has a status code to land on.
@@ -224,7 +224,7 @@ def scan_status(request):
     progress = _in_flight_scan_progress()
     if progress is None and not Photo.objects.exists():
         # Nothing indexed yet and nothing running: kick off the first scan
-        # so a fresh `culler open` in browser mode (which missed the CLI's
+        # so a fresh `maier open` in browser mode (which missed the CLI's
         # own start_background_scan call, e.g. tests hitting the view
         # directly) still gets indexed.
         progress = start_background_scan(settings.WORKING_FOLDER)
@@ -298,7 +298,7 @@ def resolve_pair(request, pair_id):
         # "defer": no DB change -- the redirect below simply requests the
         # next pair after this one, wrapping around, without resolving it.
     except FileNotFoundError:
-        return HttpResponse("file moved or deleted outside Culler", status=409)
+        return HttpResponse("file moved or deleted outside Maier", status=409)
     except culling.AccountSessionExpired as exc:
         return HttpResponse(f"iCloud session expired for {exc.account}", status=409)
 

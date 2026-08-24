@@ -1,11 +1,11 @@
 """Persistent recent-folders list for the desktop home screen (SPEC §11).
 
-This lives at the top level (not `culler.core`) and deliberately does NOT
-import `culler.settings` / Django: the native folder picker and home screen
-(`culler.window`) run *before* Django is booted -- `cli.py` only sets
-`CULLER_FOLDER` and calls `django.setup()` once a folder has actually been
+This lives at the top level (not `maier.core`) and deliberately does NOT
+import `maier.settings` / Django: the native folder picker and home screen
+(`maier.window`) run *before* Django is booted -- `cli.py` only sets
+`MAIER_FOLDER` and calls `django.setup()` once a folder has actually been
 chosen. Computing the config directory here duplicates one line of
-`settings.py` (`platformdirs.user_config_dir("Culler")` ->
+`settings.py` (`platformdirs.user_config_dir("Maier")` ->
 `GLOBAL_CONFIG_DIR`); if the app name or that computation ever changes,
 update both places.
 """
@@ -20,7 +20,7 @@ from pathlib import Path
 
 import platformdirs
 
-APP_NAME = "Culler"
+APP_NAME = "Maier"
 MAX_RECENTS = 10
 RECENTS_FILENAME = "recent_folders.json"
 
@@ -31,11 +31,11 @@ _LOAD_ERRORS = (json.JSONDecodeError, ValueError)
 
 
 def _config_dir() -> Path:
-    # CULLER_CONFIG_DIR lets subprocess-based CLI tests redirect the global
+    # MAIER_CONFIG_DIR lets subprocess-based CLI tests redirect the global
     # config dir hermetically (platformdirs.user_config_dir honors
     # XDG_CONFIG_HOME on Linux but not macOS, where it's always
-    # ~/Library/Application Support/Culler). Not used by the app otherwise.
-    override = os.environ.get("CULLER_CONFIG_DIR")
+    # ~/Library/Application Support/Maier). Not used by the app otherwise.
+    override = os.environ.get("MAIER_CONFIG_DIR")
     if override:
         return Path(override)
     return Path(platformdirs.user_config_dir(APP_NAME))

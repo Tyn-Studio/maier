@@ -6,7 +6,7 @@ needed -- this module is pure filesystem/JSON.
 import json
 from datetime import UTC, datetime
 
-from culler.core.remote_state import (
+from maier.core.remote_state import (
     AccountState,
     list_accounts,
     load_state,
@@ -162,7 +162,7 @@ def test_list_accounts_excludes_quarantined_corrupt_files(tmp_path):
 
 
 def test_slug_is_filename_safe():
-    from culler.core.remote_state import _slug
+    from maier.core.remote_state import _slug
 
     assert _slug("Luis.Natera+test@Example.COM") == "luis-natera-test-example-com"
     assert _slug("") == "account"

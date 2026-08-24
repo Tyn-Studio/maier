@@ -1,18 +1,18 @@
-"""culler.recents deliberately avoids Django settings (it runs pre-boot),
+"""maier.recents deliberately avoids Django settings (it runs pre-boot),
 so these are plain unit tests with the config dir monkeypatched to tmp_path
-via CULLER_CONFIG_DIR (the same override the module itself consults)."""
+via MAIER_CONFIG_DIR (the same override the module itself consults)."""
 
 import json
 
 import pytest
 
-from culler import recents
+from maier import recents
 
 
 @pytest.fixture(autouse=True)
 def _config_dir(tmp_path, monkeypatch):
     config_dir = tmp_path / "config"
-    monkeypatch.setenv("CULLER_CONFIG_DIR", str(config_dir))
+    monkeypatch.setenv("MAIER_CONFIG_DIR", str(config_dir))
     return config_dir
 
 

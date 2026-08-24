@@ -5,16 +5,16 @@ import pytest
 from django.conf import settings
 from django.urls import reverse
 
-from culler.core import downloads as downloads_module
-from culler.core import pull as pull_module
-from culler.core import remote_state
-from culler.core import scan as scan_module
-from culler.core import views as views_module
-from culler.core.models import DuplicatePair, Photo
-from culler.core.phaseb import PhaseBProgress, run_phase_b
-from culler.core.pull import PullProgress
-from culler.core.scan import ScanProgress, scan
 from fixtures import build_fixture_folder
+from maier.core import downloads as downloads_module
+from maier.core import pull as pull_module
+from maier.core import remote_state
+from maier.core import scan as scan_module
+from maier.core import views as views_module
+from maier.core.models import DuplicatePair, Photo
+from maier.core.phaseb import PhaseBProgress, run_phase_b
+from maier.core.pull import PullProgress
+from maier.core.scan import ScanProgress, scan
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 

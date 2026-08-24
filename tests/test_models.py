@@ -2,7 +2,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from culler.core.models import Photo
+from maier.core.models import Photo
 
 
 @pytest.mark.django_db

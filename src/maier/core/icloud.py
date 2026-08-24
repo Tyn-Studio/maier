@@ -65,7 +65,7 @@ from pyicloud.exceptions import PyiCloudException, PyiCloudFailedLoginException
 # re-exported here so callers can import it from either module.
 from .remote_state import account_slug
 
-logger = logging.getLogger("culler.icloud")
+logger = logging.getLogger("maier.icloud")
 
 # Named tuple (not an inline `except (A, B):` literal) to sidestep a known
 # ruff 0.16.4 formatter bug that mangles inline except-tuples onto one line

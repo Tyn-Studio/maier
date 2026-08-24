@@ -7,10 +7,10 @@ from django.conf import settings
 from django.urls import reverse
 from PIL import Image
 
-from culler.core import exiftool as exiftool_module
-from culler.core import previews
-from culler.core.models import Photo
-from culler.core.previews import _content_key, _preview_key, preview_path, remote_preview_dest
+from maier.core import exiftool as exiftool_module
+from maier.core import previews
+from maier.core.models import Photo
+from maier.core.previews import _content_key, _preview_key, preview_path, remote_preview_dest
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 
@@ -81,7 +81,7 @@ def test_preview_generated_at_expected_path(tmp_path):
 
     result = preview_path(tmp_path, photo)
 
-    expected = tmp_path / ".culler" / "previews" / f"{_content_key(src)}.jpg"
+    expected = tmp_path / ".maier" / "previews" / f"{_content_key(src)}.jpg"
     assert result == expected
     assert result.exists()
     with Image.open(result) as img:
@@ -97,7 +97,7 @@ def test_preview_keyed_by_sha256_when_present(tmp_path):
 
     result = preview_path(tmp_path, photo)
 
-    assert result == tmp_path / ".culler" / "previews" / f"{sha}.jpg"
+    assert result == tmp_path / ".maier" / "previews" / f"{sha}.jpg"
     assert result.exists()
 
 
@@ -212,7 +212,7 @@ def test_raw_extension_generates_real_preview_via_fake_exiftool(tmp_path, monkey
     result = preview_path(tmp_path, photo)
 
     assert result.name != "_placeholder.jpg"
-    assert result == tmp_path / ".culler" / "previews" / f"{_content_key(raw_src)}.jpg"
+    assert result == tmp_path / ".maier" / "previews" / f"{_content_key(raw_src)}.jpg"
     with Image.open(result) as img:
         assert img.format == "JPEG"
         assert max(img.size) <= previews.MAX_DIMENSION
@@ -273,7 +273,7 @@ def test_corrupt_file_returns_placeholder(tmp_path):
     assert result.name == "_placeholder.jpg"
     # no stray partial file left behind under the content key
     key = _content_key(src)
-    assert not (tmp_path / ".culler" / "previews" / f"{key}.jpg").exists()
+    assert not (tmp_path / ".maier" / "previews" / f"{key}.jpg").exists()
 
 
 def test_placeholder_generated_once(tmp_path):
@@ -356,16 +356,16 @@ def test_remote_preview_never_hits_network_when_uncached(tmp_path, monkeypatch):
     # neither module gets imported as a side effect of this call.
     import sys
 
-    for mod in ("culler.core.pull", "culler.core.icloud"):
+    for mod in ("maier.core.pull", "maier.core.icloud"):
         sys.modules.pop(mod, None)
 
     photo = _remote_photo("r3")
     preview_path(tmp_path, photo)
 
-    assert "culler.core.pull" not in sys.modules
-    assert "culler.core.icloud" not in sys.modules
+    assert "maier.core.pull" not in sys.modules
+    assert "maier.core.icloud" not in sys.modules
 
 
 def test_remote_preview_dest_path_matches_pull_naming_scheme(tmp_path):
     dest = remote_preview_dest(tmp_path, "Luis@Example.com", "abc123")
-    assert dest == tmp_path / ".culler" / "previews" / "icloud-luis-example-com-abc123.jpg"
+    assert dest == tmp_path / ".maier" / "previews" / "icloud-luis-example-com-abc123.jpg"

@@ -1,9 +1,4 @@
-# Culler
-
-<!-- TODO(name): "Culler" is a working name -- "culler" is already taken on
-     PyPI, so this project will ship under a different final name. Every
-     spot below that needs to change once the name is picked is marked
-     TODO(name). -->
+# Maier
 
 Local-first photo culling app where **the folder structure is the state**.
 
@@ -18,7 +13,7 @@ duplication, no lock-in:
 - Undecide (`U`) moves it back to where it came from
 
 `selected/` always *is* your current selection — readable in any file
-browser, without the app. The app's own cache (`.culler/`) is fully
+browser, without the app. The app's own cache (`.maier/`) is fully
 rebuildable from the filesystem; deleting it loses no culling state.
 
 Built with Python / Django 6 / HTMX. No JS frameworks, no build step, no npm.
@@ -29,12 +24,11 @@ Requires [uv](https://docs.astral.sh/uv/) (installs Python 3.14 for you if
 you don't have it).
 
 ```sh
-# TODO(name): package isn't published yet, and will publish under a
-# different name than "culler" (taken on PyPI) -- these commands are
-# aspirational until then. Use the "Development" section below for now.
-uvx culler                       # run without installing
-uv tool install culler           # install a `culler` command permanently
-pipx install culler               # or via pipx, if you prefer
+# Not published to PyPI yet -- these commands are aspirational until then.
+# Use the "Development" section below for now.
+uvx maier                        # run without installing
+uv tool install maier            # install a `maier` command permanently
+pipx install maier                # or via pipx, if you prefer
 ```
 
 ### Double-click app (no Python required)
@@ -46,7 +40,7 @@ placeholder for the download links.
 
 Because these builds are unsigned (SPEC §13 — signing is a fast-follow):
 
-- **macOS**: Gatekeeper will refuse a plain double-click ("Culler is
+- **macOS**: Gatekeeper will refuse a plain double-click ("Maier is
   damaged" / "cannot be opened"). Right-click the app → **Open** → **Open**
   in the confirmation dialog. Only needs doing once.
 - **Windows**: SmartScreen will show "Windows protected your PC". Click
@@ -55,7 +49,7 @@ Because these builds are unsigned (SPEC §13 — signing is a fast-follow):
 ## Quickstart
 
 ```sh
-uv run culler open ~/Photos/2025-inbox
+uv run maier open ~/Photos/2025-inbox
 ```
 
 Opens a native window on the given folder (falls back to your system
@@ -66,7 +60,7 @@ thumbnails and duplicate detection fill in progressively.
 
 ### Consolidating sources first
 
-Culler doesn't read Apple Photos `.photoslibrary` bundles or Lightroom
+Maier doesn't read Apple Photos `.photoslibrary` bundles or Lightroom
 catalogs directly (not a goal — see SPEC §4). Export originals from each
 source into subfolders of one working folder before opening it:
 
@@ -84,7 +78,7 @@ layout survive culling.
 
 ## iCloud accounts
 
-Culler can also pull directly from one or more iCloud (Apple ID) accounts
+Maier can also pull directly from one or more iCloud (Apple ID) accounts
 and cull those photos in the same timeline as your local files — no export
 step needed for that source. Open the **Accounts** screen, add an account
 (email + password + 2FA code if prompted), then **Pull now**. Remote photos
@@ -98,7 +92,7 @@ A few things worth knowing before you connect an account:
   downloaded when you select (`P`) a photo, landing at
   `selected/<account>/…`. Rejected and undecided remote photos never touch
   your disk.
-- **Nothing in iCloud is ever modified.** Culler only ever reads metadata
+- **Nothing in iCloud is ever modified.** Maier only ever reads metadata
   and downloads image data from your account — no deletes, no album
   changes, no writes of any kind. Rejecting a photo locally never touches
   iCloud; it only records a local decision.
@@ -113,7 +107,7 @@ A few things worth knowing before you connect an account:
   Protection).
 - **Where state lives.** Per-account pull progress and cull decisions for
   not-yet-downloaded photos live in `icloud-state/` at the top of your
-  working folder — deliberately *not* inside `.culler/`, so they survive
+  working folder — deliberately *not* inside `.maier/`, so they survive
   cache deletion and travel with the folder. Once a photo is downloaded, it
   becomes an ordinary local file and behaves exactly like the rest of your
   library.
@@ -149,11 +143,11 @@ Duplicates review screen:
 
 Bindings mirror Lightroom so muscle memory transfers.
 
-## The `.culler/` cache
+## The `.maier/` cache
 
-Each working folder gets a `.culler/` directory: a SQLite index, generated
+Each working folder gets a `.maier/` directory: a SQLite index, generated
 previews, and logs. It's a cache, not a source of truth — the filesystem
-(file locations + contents) is. Deleting `.culler/` loses no culling
+(file locations + contents) is. Deleting `.maier/` loses no culling
 decisions; the next open just re-derives status from where files currently
 live (root = undecided, `selected/` = selected, `rejected/` = rejected) and
 rebuilds previews/hashes in the background. Safe to `.gitignore`, safe to
@@ -162,11 +156,11 @@ themselves.
 
 ## exiftool
 
-Culler uses `exiftool` for accurate capture dates, RAW previews, and video
+Maier uses `exiftool` for accurate capture dates, RAW previews, and video
 metadata. It's auto-detected on `PATH`, or downloaded automatically (pinned
 version, checksum-verified) into your user data directory the first time
 it's needed. If it's unavailable (offline, download blocked, unsupported
-platform), Culler degrades gracefully: JPEG/HEIC/PNG/TIFF dates still come
+platform), Maier degrades gracefully: JPEG/HEIC/PNG/TIFF dates still come
 from Pillow's EXIF reader, and RAW previews / video metadata show a
 placeholder with a visible notice instead of failing.
 
@@ -174,7 +168,7 @@ placeholder with a visible notice instead of failing.
 
 ```sh
 uv sync                                      # install deps
-uv run culler open ~/Photos/2025 --browser   # run against a real folder
+uv run maier open ~/Photos/2025 --browser    # run against a real folder
 uv run pytest                                # tests
 uv run ruff check                            # lint
 uv run ruff format                           # format

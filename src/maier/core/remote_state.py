@@ -1,7 +1,7 @@
 """Durable per-account iCloud pull state (SPEC §18, CLAUDE.md hard rule 9):
 JSON files at `{folder}/icloud-state/{account-slug}.json`. Deliberately NOT
-under `.culler/` -- this is user state (sync cursor + per-item decisions),
-not a rebuildable cache, so it must survive `.culler/` deletion and travel
+under `.maier/` -- this is user state (sync cursor + per-item decisions),
+not a rebuildable cache, so it must survive `.maier/` deletion and travel
 with the folder on disk/between machines.
 """
 

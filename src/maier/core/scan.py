@@ -69,7 +69,7 @@ def _media_type(rel_path: Path) -> str:
 def _walk_candidates(folder: Path) -> list[Path]:
     candidates: list[Path] = []
     for dirpath, dirnames, filenames in os.walk(folder):
-        # Skip .culler/ and any other hidden dirs (safe default).
+        # Skip .maier/ and any other hidden dirs (safe default).
         dirnames[:] = [d for d in dirnames if not d.startswith(".")]
         rel_dir = Path(dirpath).relative_to(folder)
         for fname in filenames:

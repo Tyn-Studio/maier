@@ -1,5 +1,5 @@
 """Preview generation: 2048px-long-edge JPEGs cached under
-`.culler/previews/`, keyed by content so they survive moves. See SPEC.md
+`.maier/previews/`, keyed by content so they survive moves. See SPEC.md
 §6 Phase B item 1 and §10 (review-screen perf).
 """
 
@@ -38,7 +38,7 @@ _PREVIEW_GENERATION_ERRORS = (OSError, UnidentifiedImageError, ValueError)
 
 
 def _previews_dir(folder: Path) -> Path:
-    d = folder / ".culler" / "previews"
+    d = folder / ".maier" / "previews"
     d.mkdir(parents=True, exist_ok=True)
     return d
 
@@ -91,7 +91,7 @@ def _generate_image_preview(src: Path, dest: Path) -> None:
 
 def remote_preview_dest(folder: Path, account: str, remote_id: str) -> Path:
     """Cache path for a remote (iCloud) photo's prefetched medium preview
-    (SPEC §18: "Thumbnails/medium previews cache under `.culler/previews/`
+    (SPEC §18: "Thumbnails/medium previews cache under `.maier/previews/`
     keyed by `remote_id`"). Shared with `core/pull.py`, which writes the
     file at this exact path -- keep the two in sync.
     """

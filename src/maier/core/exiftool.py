@@ -29,7 +29,7 @@ from pathlib import Path
 
 from django.conf import settings
 
-logger = logging.getLogger("culler.exiftool")
+logger = logging.getLogger("maier.exiftool")
 
 _EXTRACT_TIMEOUT_SECONDS = 30
 _DOWNLOAD_TIMEOUT_SECONDS = 60
@@ -163,7 +163,7 @@ def _fetch(url: str, dest: Path) -> None:
     """Network seam: the only function that touches the network. Tests
     monkeypatch this directly rather than urllib internals.
     """
-    request = urllib.request.Request(url, headers={"User-Agent": "culler-exiftool-downloader"})
+    request = urllib.request.Request(url, headers={"User-Agent": "maier-exiftool-downloader"})
     with urllib.request.urlopen(request, timeout=_DOWNLOAD_TIMEOUT_SECONDS) as response:
         with dest.open("wb") as f:
             shutil.copyfileobj(response, f)
@@ -205,11 +205,11 @@ def _download_and_extract() -> Path | None:
             )
             return None
 
-    allow_unpinned = os.environ.get("CULLER_ALLOW_UNPINNED_EXIFTOOL") == "1"
+    allow_unpinned = os.environ.get("MAIER_ALLOW_UNPINNED_EXIFTOOL") == "1"
     if EXIFTOOL_SHA256 is None and not allow_unpinned:
         logger.warning(
             "exiftool checksum is not pinned (EXIFTOOL_SHA256 is None); refusing to "
-            "auto-download. Set CULLER_ALLOW_UNPINNED_EXIFTOOL=1 to override for dev use."
+            "auto-download. Set MAIER_ALLOW_UNPINNED_EXIFTOOL=1 to override for dev use."
         )
         return None
 
@@ -233,7 +233,7 @@ def _download_and_extract() -> Path | None:
                 logger.error("exiftool tarball checksum mismatch; refusing to extract")
                 return None
         else:
-            logger.warning("CULLER_ALLOW_UNPINNED_EXIFTOOL=1: skipping checksum verification")
+            logger.warning("MAIER_ALLOW_UNPINNED_EXIFTOOL=1: skipping checksum verification")
 
         extract_dir.mkdir(parents=True, exist_ok=True)
         try:

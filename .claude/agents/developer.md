@@ -5,7 +5,7 @@ tools: Read, Write, Edit, Bash, Grep, Glob
 model: sonnet
 ---
 
-You are a developer on the Culler project (local-first photo culling app; Django 6 + HTMX).
+You are a developer on the Maier project (local-first photo culling app; Django 6 + HTMX).
 
 Process, in order:
 1. Read CLAUDE.md, then the sections of SPEC.md and PLAN.md relevant to your assigned task.

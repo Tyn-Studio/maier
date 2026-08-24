@@ -1,6 +1,6 @@
 """End-to-end integration tests (SPEC §15): index a fixture folder ->
 assert DB matches filesystem; cull via views -> files physically moved;
-external moves -> rescan converges; `.culler/` cache loss -> state rebuilt
+external moves -> rescan converges; `.maier/` cache loss -> state rebuilt
 from locations alone; reopen -> no-op diff; full grid/cull/filter loop.
 
 Flows that touch views (set-status, grid) must create their fixture files
@@ -20,11 +20,11 @@ import pytest
 from django.conf import settings
 from django.urls import reverse
 
-from culler.core import moves
-from culler.core import scan as scan_module
-from culler.core.models import Photo
-from culler.core.scan import ScanProgress, scan
 from fixtures import build_fixture_folder
+from maier.core import moves
+from maier.core import scan as scan_module
+from maier.core.models import Photo
+from maier.core.scan import ScanProgress, scan
 
 
 def _local(naive: datetime) -> datetime:
@@ -55,10 +55,10 @@ def test_index_matches_filesystem(tmp_path):
     }
     build_fixture_folder(tmp_path, spec)
 
-    # Reserved .culler/ dir (as if a prior open already created a cache)
+    # Reserved .maier/ dir (as if a prior open already created a cache)
     # must never be walked into.
-    (tmp_path / ".culler").mkdir()
-    (tmp_path / ".culler" / "culler.sqlite3").write_bytes(b"fake db, must be ignored")
+    (tmp_path / ".maier").mkdir()
+    (tmp_path / ".maier" / "maier.sqlite3").write_bytes(b"fake db, must be ignored")
 
     progress = ScanProgress()
     scan(tmp_path, progress)
@@ -205,11 +205,11 @@ def test_rescan_converges_after_external_moves(tmp_path):
     assert photos["lightroom/IMG_0002.jpg"].id == before_ids["rejected/lightroom/IMG_0002.jpg"]
 
 
-# --- 4. .culler/ cache loss -> state rebuilt from locations alone -------
+# --- 4. .maier/ cache loss -> state rebuilt from locations alone -------
 
 
 @pytest.mark.django_db
-def test_culler_cache_loss_state_rebuilt_from_locations(tmp_path):
+def test_maier_cache_loss_state_rebuilt_from_locations(tmp_path):
     spec = {
         "apple-luis/IMG_0001.jpg": {"datetime_original": "2025:06:01 10:00:00"},
         "lightroom/IMG_0002.jpg": {"datetime_original": "2025:06:02 11:00:00"},
@@ -221,9 +221,9 @@ def test_culler_cache_loss_state_rebuilt_from_locations(tmp_path):
     moves.apply_status(tmp_path, photo, "selected")
     assert (tmp_path / "selected/apple-luis/IMG_0001.jpg").exists()
 
-    # Stand-in for "the user deletes .culler/": we can't actually delete the
+    # Stand-in for "the user deletes .maier/": we can't actually delete the
     # on-disk sqlite3 file here, since it's the live connection this whole
-    # test session runs on (bound to CULLER_FOLDER, not this tmp_path -- see
+    # test session runs on (bound to MAIER_FOLDER, not this tmp_path -- see
     # tests/_bootstrap.py). Deleting every Photo row is the equivalent
     # cache-loss event for what this test is actually checking: that status
     # is fully re-derivable from file location alone, with no DB memory.

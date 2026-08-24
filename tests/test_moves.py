@@ -3,8 +3,8 @@ from pathlib import PurePosixPath
 
 import pytest
 
-from culler.core.models import Photo
-from culler.core.moves import apply_status, dest_for
+from maier.core.models import Photo
+from maier.core.moves import apply_status, dest_for
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 

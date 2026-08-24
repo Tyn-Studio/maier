@@ -1,9 +1,9 @@
-"""CLI is exercised as a subprocess: settings.py reads CULLER_FOLDER at
+"""CLI is exercised as a subprocess: settings.py reads MAIER_FOLDER at
 Django-settings import time, so each invocation needs a fresh process to
 pick up a different working folder.
 
 Window-mode paths (pywebview) can't run headless in a test process, so
-these tests set CULLER_FORCE_NO_WINDOW=1 to force the browser-mode
+these tests set MAIER_FORCE_NO_WINDOW=1 to force the browser-mode
 fallback -- the same flag CI/headless smoke tests use (see cli.py).
 """
 
@@ -16,7 +16,7 @@ import time
 import urllib.error
 import urllib.request
 
-FORCE_NO_WINDOW = {"CULLER_FORCE_NO_WINDOW": "1"}
+FORCE_NO_WINDOW = {"MAIER_FORCE_NO_WINDOW": "1"}
 
 
 def _free_port() -> int:
@@ -42,7 +42,7 @@ def _wait_for_healthz(port: int, timeout: float = 20.0) -> None:
 
 def test_status_on_empty_folder_exits_zero(tmp_path):
     result = subprocess.run(
-        [sys.executable, "-m", "culler.cli", "status", str(tmp_path)],
+        [sys.executable, "-m", "maier.cli", "status", str(tmp_path)],
         capture_output=True,
         text=True,
         timeout=30,
@@ -56,7 +56,7 @@ def test_status_on_empty_folder_exits_zero(tmp_path):
 def test_status_on_missing_folder_errors(tmp_path):
     missing = tmp_path / "does-not-exist"
     result = subprocess.run(
-        [sys.executable, "-m", "culler.cli", "status", str(missing)],
+        [sys.executable, "-m", "maier.cli", "status", str(missing)],
         capture_output=True,
         text=True,
         timeout=30,
@@ -65,28 +65,28 @@ def test_status_on_missing_folder_errors(tmp_path):
 
 
 def test_bare_cli_prints_usage_hint():
-    # Force the no-window fallback: bare `culler` now tries a pywebview
+    # Force the no-window fallback: bare `maier` now tries a pywebview
     # home screen first, which must not actually run in a headless test.
     result = subprocess.run(
-        [sys.executable, "-m", "culler.cli"],
+        [sys.executable, "-m", "maier.cli"],
         capture_output=True,
         text=True,
         timeout=30,
         env={**os.environ, **FORCE_NO_WINDOW},
     )
     assert result.returncode == 0
-    assert "culler open" in result.stdout
+    assert "maier open" in result.stdout
 
 
 def test_bare_cli_browser_flag_prints_browser_hint():
     result = subprocess.run(
-        [sys.executable, "-m", "culler.cli", "--browser"],
+        [sys.executable, "-m", "maier.cli", "--browser"],
         capture_output=True,
         text=True,
         timeout=30,
     )
     assert result.returncode == 0
-    assert "culler open PATH --browser" in result.stdout
+    assert "maier open PATH --browser" in result.stdout
 
 
 def test_open_browser_mode_serves_healthz(tmp_path):
@@ -95,7 +95,7 @@ def test_open_browser_mode_serves_healthz(tmp_path):
         [
             sys.executable,
             "-m",
-            "culler.cli",
+            "maier.cli",
             "open",
             str(tmp_path),
             "--browser",
@@ -120,7 +120,7 @@ def test_open_browser_mode_serves_healthz(tmp_path):
 def test_open_default_mode_falls_back_to_browser_when_window_forced_off(tmp_path):
     port = _free_port()
     proc = subprocess.Popen(
-        [sys.executable, "-m", "culler.cli", "open", str(tmp_path), "--port", str(port)],
+        [sys.executable, "-m", "maier.cli", "open", str(tmp_path), "--port", str(port)],
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
@@ -147,7 +147,7 @@ def test_open_records_recent_folder(tmp_path):
         [
             sys.executable,
             "-m",
-            "culler.cli",
+            "maier.cli",
             "open",
             str(working_folder),
             "--browser",
@@ -157,7 +157,7 @@ def test_open_records_recent_folder(tmp_path):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         text=True,
-        env={**os.environ, "CULLER_CONFIG_DIR": str(config_dir)},
+        env={**os.environ, "MAIER_CONFIG_DIR": str(config_dir)},
     )
     try:
         _wait_for_healthz(port)

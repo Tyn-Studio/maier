@@ -1,4 +1,4 @@
-"""Set CULLER_FOLDER before culler.settings can possibly be imported.
+"""Set MAIER_FOLDER before maier.settings can possibly be imported.
 
 pytest-django forces an import of the settings module inside its
 `pytest_load_initial_conftests` hookimpl, which runs *before* pytest loads
@@ -16,6 +16,6 @@ import os
 import tempfile
 from pathlib import Path
 
-TEST_FOLDER = Path(tempfile.mkdtemp(prefix="culler-pytest-"))
-os.environ["CULLER_FOLDER"] = str(TEST_FOLDER)
-os.environ.setdefault("DJANGO_SETTINGS_MODULE", "culler.settings")
+TEST_FOLDER = Path(tempfile.mkdtemp(prefix="maier-pytest-"))
+os.environ["MAIER_FOLDER"] = str(TEST_FOLDER)
+os.environ.setdefault("DJANGO_SETTINGS_MODULE", "maier.settings")

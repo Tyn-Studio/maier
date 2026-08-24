@@ -1,6 +1,6 @@
-# Culler — Specification
+# Maier — Specification
 
-Working name: **Culler** (final name TBD — see Open Questions; note an existing commercial app is called "PhotoCuller", avoid that name).
+Working name: **Maier** (decided 2026-08-24, after photographer Vivian Maier — see Open Questions).
 
 ## 1. Purpose
 
@@ -10,7 +10,7 @@ A local-first, folder-centric photo culling app where **the folder structure is 
 - **Reject** → file moves to `{folder}/rejected/…`
 - **Undecided/optional** → file stays in (or moves back to) the folder root structure
 
-There is no export step and no data duplication: `selected/` always contains exactly the current selection, readable in any file browser without the app. The app's own data (`.culler/`) is a rebuildable cache — deleting it loses nothing about which photos are selected.
+There is no export step and no data duplication: `selected/` always contains exactly the current selection, readable in any file browser without the app. The app's own data (`.maier/`) is a rebuildable cache — deleting it loses nothing about which photos are selected.
 
 Distributed as a normal desktop app: technical users install with one command; non-technical users get a double-clickable app.
 
@@ -26,7 +26,7 @@ Distributed as a normal desktop app: technical users install with one command; n
 
 | Location | Status in UI |
 |---|---|
-| `{folder}/…` (anywhere except the two status folders and `.culler/`) | `optional` (undecided) |
+| `{folder}/…` (anywhere except the two status folders and `.maier/`) | `optional` (undecided) |
 | `{folder}/selected/…` | `selected` |
 | `{folder}/rejected/…` | `rejected` |
 
@@ -67,14 +67,14 @@ CSS: a single hand-written stylesheet. Dark UI.
 
 ## 6. Indexing (progressive, two phases)
 
-Triggered on folder open and on demand (rescan button). Covers the whole working folder; skips `.culler/`. Extension filter: images `.jpg .jpeg .png .heic .heif .tif .tiff .dng .cr2 .cr3 .nef .arw .raf .orf .rw2`, videos `.mov .mp4 .m4v .avi`.
+Triggered on folder open and on demand (rescan button). Covers the whole working folder; skips `.maier/`. Extension filter: images `.jpg .jpeg .png .heic .heif .tif .tiff .dng .cr2 .cr3 .nef .arw .raf .orf .rw2`, videos `.mov .mp4 .m4v .avi`.
 
 **Phase A — fast index (foreground, progressive).** Walk the tree; derive status from location (§3) and provenance from the path. For new/changed files, read capture datetime + dimensions + orientation via exiftool (batched, `-stay_open`). The grid renders immediately, photos slot in as indexed, banner shows "indexing 12,400 / 20,000"; culling is allowed from the first second. Target: a 20–50k-photo year fully date-indexed in minutes; re-opens are near-instant via the (path, size, mtime) cache.
 
 **Move reconciliation**: a file that disappeared from one indexed path while an identical (size, mtime — hash-confirmed when available) file appeared at another is re-linked to its existing DB row, keeping its preview, capture date, and dupe history. Genuinely missing files are marked `missing` (hidden by default, state retained).
 
 **Phase B — heavy work (background queue, interruptible, resumes on next open):**
-1. **Previews**: max 2048 px long-edge JPEG (quality 82, orientation baked in) into `.culler/previews/`, keyed by content so they survive moves. Also generated **on demand** with priority when the UI requests one that isn't ready — the viewport always beats the background sweep. HEIC via pillow-heif; RAW via exiftool embedded-preview extraction (`-b -JpgFromRaw` / `-PreviewImage`) with placeholder fallback; videos use `<video preload="metadata">` as their own thumbnail.
+1. **Previews**: max 2048 px long-edge JPEG (quality 82, orientation baked in) into `.maier/previews/`, keyed by content so they survive moves. Also generated **on demand** with priority when the UI requests one that isn't ready — the viewport always beats the background sweep. HEIC via pillow-heif; RAW via exiftool embedded-preview extraction (`-b -JpgFromRaw` / `-PreviewImage`) with placeholder fallback; videos use `<video preload="metadata">` as their own thumbnail.
 2. **SHA-256** per file → exact-dupe grouping (§8) and robust move reconciliation.
 3. **pHash** of the preview (images only) → near-dupe scan against photos within ±8 s of `captured_at`; Hamming ≤ 8 creates a `DuplicatePair`. (Time-windowed: O(burst), not O(folder).)
 4. **Live Photo pairing**: a `.mov` whose QuickTime `ContentIdentifier` matches an image's (or same basename + capture time within 1 s as fallback) is attached to the image and hidden as a standalone item.
@@ -83,7 +83,7 @@ Indexing is idempotent and crash-safe: every step is a DB upsert; errors accumul
 
 ## 7. Data model (cache role)
 
-Per-folder SQLite DB at `{folder}/.culler/culler.sqlite3`. Everything here is derivable from the filesystem + file contents except `DuplicatePair.resolved` — the DB is a cache plus a small amount of review bookkeeping.
+Per-folder SQLite DB at `{folder}/.maier/maier.sqlite3`. Everything here is derivable from the filesystem + file contents except `DuplicatePair.resolved` — the DB is a cache plus a small amount of review bookkeeping.
 
 ### Photo
 
@@ -162,21 +162,21 @@ Bindings mirror Lightroom so muscle memory transfers.
 
 ## 11. Application shell
 
-### CLI (`culler`)
+### CLI (`maier`)
 
 ```
-culler                 # launch app: native window, home screen (recent folders / picker)
-culler open PATH       # launch directly into a folder
-culler --browser       # serve + open system browser instead of the pywebview window
-culler status PATH     # headless folder stats: counts by status/provenance
+maier                  # launch app: native window, home screen (recent folders / picker)
+maier open PATH        # launch directly into a folder
+maier --browser        # serve + open system browser instead of the pywebview window
+maier status PATH      # headless folder stats: counts by status/provenance
 ```
 
-`culler` boots Django programmatically (no manage.py for users), points the DB at the opened folder's `.culler/culler.sqlite3`, runs `migrate` automatically (also on every folder open — how folder DBs upgrade across app versions), then serves via Waitress on 127.0.0.1:8347 (falls back to a free port). Binds localhost only. One folder open at a time (v1).
+`maier` boots Django programmatically (no manage.py for users), points the DB at the opened folder's `.maier/maier.sqlite3`, runs `migrate` automatically (also on every folder open — how folder DBs upgrade across app versions), then serves via Waitress on 127.0.0.1:8347 (falls back to a free port). Binds localhost only. One folder open at a time (v1).
 
 ### State locations
 
-- **Per folder** — `{folder}/.culler/`: `culler.sqlite3`, `previews/`, `logs/`. Pure cache + dupe-review bookkeeping: deleting it loses no culling state (that's in the folder structure); the folder is portable across disks/machines (relative paths only).
-- **Global** (platformdirs: `~/Library/Application Support/Culler/`, `%LOCALAPPDATA%\Culler\`, `~/.local/share/culler/`): recent-folders list, window geometry, generated `SECRET_KEY`, auto-downloaded exiftool.
+- **Per folder** — `{folder}/.maier/`: `maier.sqlite3`, `previews/`, `logs/`. Pure cache + dupe-review bookkeeping: deleting it loses no culling state (that's in the folder structure); the folder is portable across disks/machines (relative paths only).
+- **Global** (platformdirs: `~/Library/Application Support/Maier/`, `%LOCALAPPDATA%\Maier\`, `~/.local/share/maier/`): recent-folders list, window geometry, generated `SECRET_KEY`, auto-downloaded exiftool.
 
 ## 12. exiftool strategy
 
@@ -188,13 +188,13 @@ exiftool is the only non-Python dependency.
 ## 13. Distribution
 
 ### Tier 1 — PyPI
-`uvx culler` / `uv tool install culler` / `pipx install culler`. README one-liner: "install uv, run `uvx culler`". Also the dev workflow.
+`uvx maier` / `uv tool install maier` / `pipx install maier`. README one-liner: "install uv, run `uvx maier`". Also the dev workflow.
 
 ### Tier 2 — native window
 Default mode: pywebview (WKWebView / WebView2 / WebKitGTK) with native folder pickers. `--browser` mode falls back to a path text input.
 
 ### Tier 3 — double-click apps
-- PyInstaller one-dir builds: `Culler.app` (macOS), `Culler-Setup.exe` (Windows, Inno Setup or zipped exe), AppImage/tarball (Linux). Entry point = the window launcher.
+- PyInstaller one-dir builds: `Maier.app` (macOS), `Maier-Setup.exe` (Windows, Inno Setup or zipped exe), AppImage/tarball (Linux). Entry point = the window launcher.
 - PyInstaller spec declares Django templates, static files, migrations, stylesheet, and the platform exiftool binary as data files. `multiprocessing.freeze_support()` and pywebview hooks included.
 - **CI**: GitHub Actions release workflow, matrix `[macos-14, windows-latest, ubuntu-latest]`; on tag push: tests → wheel + sdist → PyPI → PyInstaller bundles → GitHub Release assets.
 - **Signing**: v1 ships unsigned; README documents macOS right-click→Open and Windows SmartScreen "More info → Run anyway". Developer-ID signing/notarization is a fast-follow once there are external users — CI slots stubbed.
@@ -224,7 +224,7 @@ Default mode: pywebview (WKWebView / WebView2 / WebKitGTK) with native folder pi
 
 ## 17. Open questions
 
-1. **Name** — "Culler" is a placeholder. Needs a PyPI-available, trademark-safe name before M4.
+1. **Name** — resolved 2026-08-24: **Maier**, after photographer Vivian Maier.
 2. **License** — MIT/Apache-2.0 if open-sourcing; decide before the repo goes public (M4 at the latest).
 3. **Exact-dupe policy** — redundant copies auto-move to `rejected/` when their group is culled (current spec), or stay in place with a badge? Decide during M2 with real data.
 4. **"New since last time" tracking** — the old incremental-export requirement dissolved with the move model (`selected/` is always the current selection). If a need emerges to know *which selected photos are new since the last upload/handoff*, add a lightweight "mark sync point" feature (DB timestamp + "added since" filter). Deferred until actually needed.
@@ -248,9 +248,9 @@ Multiple Apple accounts can be attached as **read-only import sources**. Their p
 
 ### State model
 
-- Remote items get DB rows (`Photo.source = "icloud"`, `account`, `remote_id`, remote capture date/dimensions from API metadata) but **the DB stays a cache**: durable remote state lives in per-account JSON files in the working folder at `{folder}/icloud-state/{account}.json` — portable with the folder, survives `.culler/` deletion. Each records: the incremental sync cursor (last pull watermark), and the per-remote-id decision map (`rejected` / `undecided`; `selected` is derivable from the downloaded file in `selected/{account}/` and is recorded only as a download-completed marker).
+- Remote items get DB rows (`Photo.source = "icloud"`, `account`, `remote_id`, remote capture date/dimensions from API metadata) but **the DB stays a cache**: durable remote state lives in per-account JSON files in the working folder at `{folder}/icloud-state/{account}.json` — portable with the folder, survives `.maier/` deletion. Each records: the incremental sync cursor (last pull watermark), and the per-remote-id decision map (`rejected` / `undecided`; `selected` is derivable from the downloaded file in `selected/{account}/` and is recorded only as a download-completed marker).
 - **Pulls are incremental**: first pull optionally bounded by a date range; subsequent pulls fetch only items newer than the cursor. Re-pulls are idempotent (keyed by `remote_id`).
-- Thumbnails/medium previews cache under `.culler/previews/` keyed by `remote_id` (cache role, regenerable by re-fetch).
+- Thumbnails/medium previews cache under `.maier/previews/` keyed by `remote_id` (cache role, regenerable by re-fetch).
 - Cross-account exact duplicates: remote items join §8 grouping once their selected original is downloaded and hashed; pre-download, near-identical remote items are surfaced via capture-time + filename + size heuristics (best effort).
 
 ### UI

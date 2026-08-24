@@ -10,5 +10,5 @@ build/
 htmlcov/
 .DS_Store
 # app runtime state never belongs in the repo
-.culler/
+.maier/
 /scratch/

@@ -16,9 +16,9 @@ from pathlib import Path
 
 import pytest
 
-from culler.core import culling, phaseb, remote_state
-from culler.core import downloads as downloads_module
-from culler.core.models import Photo
+from maier.core import culling, phaseb, remote_state
+from maier.core import downloads as downloads_module
+from maier.core.models import Photo
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 

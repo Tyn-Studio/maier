@@ -1,6 +1,6 @@
 """Exercises scripts/smoke_test.py itself against the dev install (SPEC
 §13's CI smoke test, run here as a real subprocess round trip). Slow: it
-launches a real `culler` server and polls it over HTTP.
+launches a real `maier` server and polls it over HTTP.
 """
 
 import subprocess
@@ -18,7 +18,7 @@ def test_smoke_script_passes_against_dev_install(tmp_path):
         [
             sys.executable,
             str(SCRIPT),
-            f"{sys.executable} -m culler.cli",
+            f"{sys.executable} -m maier.cli",
             str(tmp_path / "folder"),
             "--timeout",
             "30",
@@ -37,7 +37,7 @@ def test_smoke_script_fails_for_a_bogus_command(tmp_path):
         [
             sys.executable,
             str(SCRIPT),
-            "false --not-a-real-culler-binary",
+            "false --not-a-real-maier-binary",
             str(tmp_path / "folder"),
             "--timeout",
             "3",

@@ -1,9 +1,9 @@
-"""Django settings for the Culler project.
+"""Django settings for the Maier project.
 
 Unlike a typical Django project, most of the interesting state here is not
 global config but *per working folder*: the SQLite DB lives inside the
-folder that was opened (`{folder}/.culler/culler.sqlite3`). `culler.cli`
-sets the `CULLER_FOLDER` env var before Django is set up. When nothing has
+folder that was opened (`{folder}/.maier/maier.sqlite3`). `maier.cli`
+sets the `MAIER_FOLDER` env var before Django is set up. When nothing has
 set it (e.g. `django-admin makemigrations`, or pytest collection before the
 per-test fixture folder exists), we fall back to a placeholder directory
 under the user cache dir so the settings module can still be imported.
@@ -17,11 +17,11 @@ import platformdirs
 
 BASE_DIR = Path(__file__).resolve().parent
 
-APP_NAME = "Culler"
+APP_NAME = "Maier"
 
 # --- Working folder -------------------------------------------------------
 
-_folder_env = os.environ.get("CULLER_FOLDER")
+_folder_env = os.environ.get("MAIER_FOLDER")
 if _folder_env:
     WORKING_FOLDER = Path(_folder_env).expanduser().resolve()
 else:
@@ -29,11 +29,11 @@ else:
     # (makemigrations, pytest collection, docs tooling, ...).
     WORKING_FOLDER = Path(platformdirs.user_cache_dir(APP_NAME)) / "_no_folder"
 
-CULLER_DIR = WORKING_FOLDER / ".culler"
-CULLER_DIR.mkdir(parents=True, exist_ok=True)
-(CULLER_DIR / "previews").mkdir(parents=True, exist_ok=True)
-(CULLER_DIR / "logs").mkdir(parents=True, exist_ok=True)
-(CULLER_DIR / "staticfiles").mkdir(parents=True, exist_ok=True)
+MAIER_DIR = WORKING_FOLDER / ".maier"
+MAIER_DIR.mkdir(parents=True, exist_ok=True)
+(MAIER_DIR / "previews").mkdir(parents=True, exist_ok=True)
+(MAIER_DIR / "logs").mkdir(parents=True, exist_ok=True)
+(MAIER_DIR / "staticfiles").mkdir(parents=True, exist_ok=True)
 
 # --- Global config (platformdirs, per SPEC §11) ---------------------------
 
@@ -60,13 +60,13 @@ def _get_or_create_secret_key() -> str:
 
 SECRET_KEY = _get_or_create_secret_key()
 
-DEBUG = os.environ.get("CULLER_DEBUG", "").lower() in ("1", "true", "yes", "on")
+DEBUG = os.environ.get("MAIER_DEBUG", "").lower() in ("1", "true", "yes", "on")
 
 ALLOWED_HOSTS = ["localhost", "127.0.0.1"]
 
 INSTALLED_APPS = [
     "django.contrib.staticfiles",
-    "culler.core",
+    "maier.core",
 ]
 
 MIDDLEWARE = [
@@ -78,7 +78,7 @@ MIDDLEWARE = [
     "django.middleware.csrf.CsrfViewMiddleware",
 ]
 
-ROOT_URLCONF = "culler.urls"
+ROOT_URLCONF = "maier.urls"
 
 TEMPLATES = [
     {
@@ -94,14 +94,14 @@ TEMPLATES = [
     },
 ]
 
-WSGI_APPLICATION = "culler.wsgi.application"
+WSGI_APPLICATION = "maier.wsgi.application"
 
 # --- Database (SQLite, WAL mode, cache role — SPEC §7/§11) ----------------
 
 DATABASES = {
     "default": {
         "ENGINE": "django.db.backends.sqlite3",
-        "NAME": str(CULLER_DIR / "culler.sqlite3"),
+        "NAME": str(MAIER_DIR / "maier.sqlite3"),
         "OPTIONS": {
             "init_command": "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
         },
@@ -115,9 +115,9 @@ TIME_ZONE = "UTC"
 
 # Desktop app, single user, no build step: whitenoise serves static files
 # straight from each app's static/ dir (WHITENOISE_USE_FINDERS) so there is
-# never a collectstatic step for users running `culler open`.
+# never a collectstatic step for users running `maier open`.
 STATIC_URL = "static/"
-STATIC_ROOT = CULLER_DIR / "staticfiles"
+STATIC_ROOT = MAIER_DIR / "staticfiles"
 STORAGES = {
     "staticfiles": {
         "BACKEND": "django.contrib.staticfiles.storage.StaticFilesStorage",

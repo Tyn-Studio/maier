@@ -20,11 +20,12 @@ import imagehash
 import pytest
 from PIL import Image, ImageDraw
 
-from culler.core import moves
-from culler.core import phaseb as phaseb_module
-from culler.core import queries as queries_module
-from culler.core.models import DuplicatePair, Photo
-from culler.core.phaseb import (
+from fixtures import build_fixture_folder
+from maier.core import moves
+from maier.core import phaseb as phaseb_module
+from maier.core import queries as queries_module
+from maier.core.models import DuplicatePair, Photo
+from maier.core.phaseb import (
     PhaseBProgress,
     apply_status_to_group,
     duplicate_counts,
@@ -34,8 +35,7 @@ from culler.core.phaseb import (
     run_phase_b,
     start_phase_b,
 )
-from culler.core.scan import ScanProgress, scan
-from fixtures import build_fixture_folder
+from maier.core.scan import ScanProgress, scan
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 

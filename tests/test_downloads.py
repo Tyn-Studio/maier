@@ -17,8 +17,8 @@ from pathlib import Path
 
 import pytest
 
-from culler.core import downloads, remote_state
-from culler.core.models import Photo
+from maier.core import downloads, remote_state
+from maier.core.models import Photo
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
 
@@ -311,7 +311,7 @@ class _FakePullClient:
 
 @pytest.mark.django_db
 def test_pull_does_not_disturb_selected_pending_remote_row(tmp_path):
-    from culler.core.pull import PullProgress, pull_account
+    from maier.core.pull import PullProgress, pull_account
 
     photo = _remote_photo("r1", status=Photo.STATUS_SELECTED)
     client = _FakePullClient("luis@example.com", [_FakeAsset("r1", "a.jpg", _CAPTURED, 1000)])
@@ -334,7 +334,7 @@ def test_pull_does_not_resurrect_row_after_successful_download(tmp_path):
     row alone rather than overwriting it back to a sentinel `source="icloud"`
     row.
     """
-    from culler.core.pull import PullProgress, pull_account
+    from maier.core.pull import PullProgress, pull_account
 
     slug = remote_state.account_slug("luis@example.com")
     local_photo = Photo.objects.create(

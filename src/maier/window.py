@@ -18,7 +18,7 @@ import html
 from pathlib import Path
 
 
-def launch_window(url: str, title: str = "Culler") -> None:
+def launch_window(url: str, title: str = "Maier") -> None:
     """Open the main app window pointed at `url` and block until closed.
     Must be called from the main thread (pywebview owns it)."""
     import webview
@@ -123,7 +123,7 @@ def _home_html(recents: list[dict]) -> str:
 </style>
 </head>
 <body>
-  <h1>Culler</h1>
+  <h1>Maier</h1>
   {list_html}
   <button id="pick-btn">Open folder&hellip;</button>
   <script>
@@ -170,7 +170,7 @@ def show_home(recents: list[dict]) -> Path | None:
     api = HomeApi()
     try:
         webview.create_window(
-            "Culler",
+            "Maier",
             html=_home_html(recents),
             js_api=api,
             width=900,

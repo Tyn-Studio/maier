@@ -10,7 +10,7 @@ from pathlib import Path
 import pytest
 from django.conf import settings
 
-from culler.core import exiftool
+from maier.core import exiftool
 
 
 @pytest.fixture(autouse=True)
@@ -27,7 +27,7 @@ def _reset_exiftool_pin(monkeypatch):
     env var doesn't leak in from the real environment.
     """
     monkeypatch.setattr(exiftool, "EXIFTOOL_SHA256", None)
-    monkeypatch.delenv("CULLER_ALLOW_UNPINNED_EXIFTOOL", raising=False)
+    monkeypatch.delenv("MAIER_ALLOW_UNPINNED_EXIFTOOL", raising=False)
 
 
 def _make_executable(path: Path, script: str) -> None:
@@ -41,7 +41,7 @@ def _make_executable(path: Path, script: str) -> None:
 
 def test_find_exiftool_returns_none_when_absent(monkeypatch):
     monkeypatch.setattr(exiftool.shutil, "which", lambda name: None)
-    monkeypatch.setattr(settings, "GLOBAL_DATA_DIR", Path("/does/not/exist/culler-test"))
+    monkeypatch.setattr(settings, "GLOBAL_DATA_DIR", Path("/does/not/exist/maier-test"))
 
     assert exiftool.find_exiftool() is None
 
@@ -335,7 +335,7 @@ def test_ensure_exiftool_refuses_when_sha_unpinned_and_no_override(monkeypatch, 
 
 def test_ensure_exiftool_unpinned_override_proceeds(monkeypatch, tmp_path):
     data_dir = _setup_download_env(monkeypatch, tmp_path)
-    monkeypatch.setenv("CULLER_ALLOW_UNPINNED_EXIFTOOL", "1")
+    monkeypatch.setenv("MAIER_ALLOW_UNPINNED_EXIFTOOL", "1")
     assert exiftool.EXIFTOOL_SHA256 is None
     source_tarball = _build_tarball(tmp_path / "source.tar.gz")
 

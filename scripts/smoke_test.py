@@ -1,17 +1,20 @@
 #!/usr/bin/env python3
-"""CI smoke test (SPEC §13): launch a built app bundle headless, hit
-`/healthz`, assert 200. Catches PyInstaller missing-data-file breakage
-before it reaches a GitHub Release.
+"""CI smoke test (SPEC §13): launch a built app bundle headless and hit
+every top-level page — /healthz, /grid, /summary, /dupes, and /accounts
+with a seeded iCloud account-state file. Catches PyInstaller
+missing-data-file breakage (templates, statics) before it reaches a
+GitHub Release; the accounts-with-state check exists because a missing
+template only surfaced on that page's non-empty path (2026-08-24).
 
 Usage:
     python scripts/smoke_test.py <binary-or-command> <working-folder> [--port N] [--timeout SECS]
 
 `<binary-or-command>` is normally a path to the built app (e.g.
-`dist/Culler/Culler` or `dist/Culler.app/Contents/MacOS/Culler`), but it
+`dist/Maier/Maier` or `dist/Maier.app/Contents/MacOS/Maier`), but it
 also accepts a *space-separated command* so the script can be exercised
 against the dev install today, e.g.:
 
-    python scripts/smoke_test.py "uv run culler" /tmp/somefolder
+    python scripts/smoke_test.py "uv run maier" /tmp/somefolder
 
 (shlex-split, so quote it as one argv[1] if it contains spaces).
 
@@ -53,11 +56,48 @@ def _wait_for_healthz(port: int, timeout: float) -> tuple[bool, str]:
     return False, last_error
 
 
+# Every page a user can reach from the nav, with a substring its template
+# must render. /accounts is checked with a seeded account-state file (see
+# _seed_account_state) so the per-account row partials render too — the
+# empty page alone would miss include-level template breakage.
+_PAGE_CHECKS = [
+    ("/grid", "filter-bar"),
+    ("/summary", "Summary"),
+    ("/dupes", "unresolved"),
+    ("/accounts", "smoke-test@example.com"),
+]
+
+
+def _seed_account_state(folder: str) -> None:
+    state_dir = os.path.join(folder, "icloud-state")
+    os.makedirs(state_dir, exist_ok=True)
+    with open(os.path.join(state_dir, "smoke-test-example-com.json"), "w") as f:
+        f.write(
+            '{"account": "smoke-test@example.com", "cursor": null,'
+            ' "decisions": {}, "downloaded": {}, "version": 1}'
+        )
+
+
+def _check_pages(port: int) -> tuple[bool, str]:
+    for path, must_contain in _PAGE_CHECKS:
+        url = f"http://127.0.0.1:{port}{path}"
+        try:
+            with urllib.request.urlopen(url, timeout=5) as resp:
+                body = resp.read().decode("utf-8", errors="replace")
+                if resp.status != 200:
+                    return False, f"{path} returned {resp.status}"
+                if must_contain not in body:
+                    return False, f"{path} rendered without expected content {must_contain!r}"
+        except (urllib.error.URLError, ConnectionError, TimeoutError) as exc:
+            return False, f"{path} failed: {exc}"
+    return True, "ok"
+
+
 def run_smoke_test(binary: str, folder: str, *, port: int | None, timeout: float) -> bool:
     port = port or _free_port()
     cmd = shlex.split(binary) + ["open", folder, "--browser", "--port", str(port)]
 
-    env = {**os.environ, "CULLER_FORCE_NO_WINDOW": "1"}
+    env = {**os.environ, "MAIER_FORCE_NO_WINDOW": "1"}
 
     print(f"smoke_test: launching: {' '.join(cmd)}")
     proc = subprocess.Popen(
@@ -69,10 +109,14 @@ def run_smoke_test(binary: str, folder: str, *, port: int | None, timeout: float
     )
     try:
         ok, detail = _wait_for_healthz(port, timeout)
-        if ok:
-            print(f"PASS: /healthz responded 200 on port {port}")
-        else:
+        if not ok:
             print(f"FAIL: /healthz never responded on port {port}: {detail}")
+            return False
+        ok, detail = _check_pages(port)
+        if ok:
+            print(f"PASS: /healthz + {len(_PAGE_CHECKS)} pages OK on port {port}")
+        else:
+            print(f"FAIL: {detail}")
         return ok
     finally:
         proc.terminate()
@@ -91,15 +135,14 @@ def run_smoke_test(binary: str, folder: str, *, port: int | None, timeout: float
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument(
-        "binary", help="path to the built binary, or a command like 'uv run culler'"
-    )
+    parser.add_argument("binary", help="path to the built binary, or a command like 'uv run maier'")
     parser.add_argument("folder", help="working folder to open (created if it doesn't exist)")
     parser.add_argument("--port", type=int, default=None)
     parser.add_argument("--timeout", type=float, default=30.0)
     args = parser.parse_args(argv)
 
     os.makedirs(args.folder, exist_ok=True)
+    _seed_account_state(args.folder)
 
     ok = run_smoke_test(args.binary, args.folder, port=args.port, timeout=args.timeout)
     return 0 if ok else 1

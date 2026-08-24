@@ -1,6 +1,6 @@
 """M5 end-to-end integration tests (SPEC §18, PLAN T19): attach -> pull ->
 mixed local/remote timeline -> full remote cull loop via views -> only
-selected originals ever land on disk -> state survives `.culler/` cache
+selected originals ever land on disk -> state survives `.maier/` cache
 deletion -> incremental re-pull is idempotent -> expired-session UX ->
 remote rows never join dupe grouping.
 
@@ -32,16 +32,16 @@ import pytest
 from django.conf import settings
 from django.urls import reverse
 
-from culler.core import culling, remote_state
-from culler.core import downloads as downloads_module
-from culler.core import phaseb as phaseb_module
-from culler.core import previews as previews_module
-from culler.core import views as views_module
-from culler.core.models import DuplicatePair, Photo
-from culler.core.phaseb import PhaseBProgress, run_phase_b
-from culler.core.pull import PullProgress, pull_account
-from culler.core.scan import ScanProgress, scan
 from fixtures import build_fixture_folder
+from maier.core import culling, remote_state
+from maier.core import downloads as downloads_module
+from maier.core import phaseb as phaseb_module
+from maier.core import previews as previews_module
+from maier.core import views as views_module
+from maier.core.models import DuplicatePair, Photo
+from maier.core.phaseb import PhaseBProgress, run_phase_b
+from maier.core.pull import PullProgress, pull_account
+from maier.core.scan import ScanProgress, scan
 
 
 @dataclass
@@ -92,18 +92,18 @@ def _pull(folder: Path, client: FakeICloudClient) -> PullProgress:
 
 
 def _snapshot(folder: Path) -> set[str]:
-    """Relative paths of every file under `folder`, EXCLUDING `.culler/`
+    """Relative paths of every file under `folder`, EXCLUDING `.maier/`
     (SPEC §18/§7: the DB + preview cache are a cache role the app is always
     allowed to write to -- SPEC §18 rule 1's "no files anywhere else"
-    guarantee is about the *photo tree*, not the cache; `.culler/`'s own
+    guarantee is about the *photo tree*, not the cache; `.maier/`'s own
     sqlite WAL/SHM files churn on every DB write regardless of what this
-    test does, which would make a `.culler`-inclusive snapshot flaky for
+    test does, which would make a `.maier`-inclusive snapshot flaky for
     reasons unrelated to the guard being tested here).
     """
     return {
         p.relative_to(folder).as_posix()
         for p in folder.rglob("*")
-        if p.is_file() and not p.relative_to(folder).as_posix().startswith(".culler/")
+        if p.is_file() and not p.relative_to(folder).as_posix().startswith(".maier/")
     }
 
 
@@ -281,11 +281,11 @@ def test_full_remote_cull_loop_only_selected_originals_land_on_disk(client, monk
     assert f'"{reverse("preview", args=[photo_select.pk])}"' in response.content.decode()
 
 
-# --- 4. state survives `.culler/` cache deletion ------------------------------
+# --- 4. state survives `.maier/` cache deletion ------------------------------
 
 
 @pytest.mark.django_db(transaction=True)
-def test_state_survives_culler_cache_deletion_and_repull(client, monkeypatch):
+def test_state_survives_maier_cache_deletion_and_repull(client, monkeypatch):
     unique = "t_t19_cache_loss"
     account = f"{unique}@example.com"
 
@@ -317,13 +317,13 @@ def test_state_survives_culler_cache_deletion_and_repull(client, monkeypatch):
     downloaded_rel_path = Photo.objects.get(pk=photo_select.pk).relative_path
     assert (settings.WORKING_FOLDER / downloaded_rel_path).exists()
 
-    # `.culler/` cache-loss stand-in (per tests/test_integration.py's own
+    # `.maier/` cache-loss stand-in (per tests/test_integration.py's own
     # documented convention: we can't literally delete the live sqlite file
     # this session runs on, so we delete every Photo row -- the equivalent
     # event for what this test actually checks) PLUS the remote preview
-    # cache files under `.culler/previews/`.
+    # cache files under `.maier/previews/`.
     Photo.objects.all().delete()
-    for f in (settings.WORKING_FOLDER / ".culler" / "previews").glob("icloud-*"):
+    for f in (settings.WORKING_FOLDER / ".maier" / "previews").glob("icloud-*"):
         f.unlink()
 
     progress = _pull(settings.WORKING_FOLDER, fake_client)

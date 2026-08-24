@@ -1,7 +1,7 @@
-"""The `culler` CLI — the only entry point users touch.
+"""The `maier` CLI — the only entry point users touch.
 
 Boots Django programmatically against a chosen working folder (no
-manage.py), auto-migrates that folder's `.culler/culler.sqlite3`, and
+manage.py), auto-migrates that folder's `.maier/maier.sqlite3`, and
 serves via Waitress on 127.0.0.1.
 """
 
@@ -18,27 +18,27 @@ from pathlib import Path
 DEFAULT_PORT = 8347
 
 USAGE_HINT = """\
-culler — local-first photo culling
+maier — local-first photo culling
 
 Usage:
-  culler                                    launch the app (native window, recent folders)
-  culler open PATH [--browser] [--port N]   open a working folder
-  culler --browser                          browser mode (see note below)
-  culler status PATH                        print status counts, no server
+  maier                                    launch the app (native window, recent folders)
+  maier open PATH [--browser] [--port N]   open a working folder
+  maier --browser                          browser mode (see note below)
+  maier status PATH                        print status counts, no server
 
-Run 'culler open PATH' to get started.
+Run 'maier open PATH' to get started.
 """
 
-# `culler --browser` (bare, no folder) has nowhere useful to serve from --
+# `maier --browser` (bare, no folder) has nowhere useful to serve from --
 # SPEC's browser-mode "home" (path text input) would need a server bound to
 # a placeholder folder, which isn't worth it yet. Point at `open --browser`.
 BROWSER_USAGE_HINT = """\
-culler — local-first photo culling
+maier — local-first photo culling
 
 Browser mode needs a folder to open:
-  culler open PATH --browser [--port N]
+  maier open PATH --browser [--port N]
 
-Run 'culler open PATH --browser' to get started.
+Run 'maier open PATH --browser' to get started.
 """
 
 
@@ -61,8 +61,8 @@ def _pick_port(preferred: int) -> int:
 
 
 def _bootstrap_django(folder: Path) -> None:
-    os.environ["CULLER_FOLDER"] = str(folder)
-    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "culler.settings")
+    os.environ["MAIER_FOLDER"] = str(folder)
+    os.environ.setdefault("DJANGO_SETTINGS_MODULE", "maier.settings")
     import django
 
     django.setup()
@@ -71,16 +71,16 @@ def _bootstrap_django(folder: Path) -> None:
 def _window_forced_off() -> bool:
     # Set by headless CI/smoke-test invocations that can't create a native
     # window (also what tests use, since pywebview can't run in a test
-    # process). `culler open` still works everywhere: it falls back to
+    # process). `maier open` still works everywhere: it falls back to
     # browser-mode serving.
-    return os.environ.get("CULLER_FORCE_NO_WINDOW") == "1"
+    return os.environ.get("MAIER_FORCE_NO_WINDOW") == "1"
 
 
 def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
-    """Shared body of `culler open PATH` and the post-picker bare-command
+    """Shared body of `maier open PATH` and the post-picker bare-command
     flow: bootstrap Django, migrate, start indexing, then serve either in
     a pywebview window (default) or a plain browser tab (--browser /
-    CULLER_FORCE_NO_WINDOW / window unavailable)."""
+    MAIER_FORCE_NO_WINDOW / window unavailable)."""
     _bootstrap_django(folder)
 
     from django.core.management import call_command
@@ -91,30 +91,30 @@ def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
 
     application = get_wsgi_application()
 
-    from culler.core.scan import start_background_scan
+    from maier.core.scan import start_background_scan
 
     start_background_scan(folder)
 
-    from culler.recents import record_recent
+    from maier.recents import record_recent
 
     record_recent(folder)
 
     # SPEC §12: exiftool absent on PATH -> fetch a pinned, checksum-verified
     # copy into the global data dir, without blocking startup. No-op when
     # already present; offline failures degrade silently (Pillow fallback).
-    from culler.core.exiftool import ensure_exiftool
+    from maier.core.exiftool import ensure_exiftool
 
     ensure_exiftool(background=True)
 
     port = _pick_port(port)
     url = f"http://127.0.0.1:{port}/"
-    print(f"Culler serving {folder} at {url}")
+    print(f"Maier serving {folder} at {url}")
 
     use_window = not browser and not _window_forced_off()
     window_module = None
     if use_window:
         try:
-            from culler import window as window_module
+            from maier import window as window_module
         except Exception:
             use_window = False
 
@@ -169,7 +169,7 @@ def cmd_status(args: argparse.Namespace) -> int:
 
     from django.db.utils import OperationalError
 
-    from culler.core.models import Photo
+    from maier.core.models import Photo
 
     counts = {"optional": 0, "selected": 0, "rejected": 0}
     try:
@@ -187,8 +187,8 @@ def cmd_status(args: argparse.Namespace) -> int:
 
 
 def cmd_home(args: argparse.Namespace) -> int:
-    """Bare `culler`: native-window home screen (recent folders / picker).
-    A chosen folder proceeds exactly like `culler open <choice>`."""
+    """Bare `maier`: native-window home screen (recent folders / picker).
+    A chosen folder proceeds exactly like `maier open <choice>`."""
     if args.browser:
         print(BROWSER_USAGE_HINT)
         return 0
@@ -198,8 +198,8 @@ def cmd_home(args: argparse.Namespace) -> int:
         return 0
 
     try:
-        from culler import window
-        from culler.recents import load_recents
+        from maier import window
+        from maier.recents import load_recents
     except Exception:
         print(USAGE_HINT)
         return 0
@@ -217,7 +217,7 @@ def cmd_home(args: argparse.Namespace) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="culler", add_help=True)
+    parser = argparse.ArgumentParser(prog="maier", add_help=True)
     parser.add_argument("--browser", action="store_true")
     parser.set_defaults(func=cmd_home)
     subparsers = parser.add_subparsers(dest="command")

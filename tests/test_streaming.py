@@ -9,8 +9,8 @@ import pytest
 from django.conf import settings
 from django.urls import reverse
 
-from culler.core.models import Photo
-from culler.core.streaming import (
+from maier.core.models import Photo
+from maier.core.streaming import (
     RangeNotSatisfiable,
     content_type_for,
     parse_range,
