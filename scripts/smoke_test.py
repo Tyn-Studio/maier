@@ -57,20 +57,23 @@ def _wait_for_healthz(port: int, timeout: float) -> tuple[bool, str]:
 
 
 # Every page a user can reach from the nav, with a substring its template
-# must render. /accounts is checked with a seeded account-state file (see
-# _seed_account_state) so the per-account row partials render too — the
-# empty page alone would miss include-level template breakage. /setup is
-# checked unconditionally (PLAN T29): the wizard renders regardless of the
-# working-range gate, so this catches its own template breakage the same
-# way. /grid needs a seeded working range (see _seed_settings) — T29's
-# setup-wizard gate would otherwise redirect a fresh, never-configured
-# folder's /grid to /setup instead of rendering the real grid.
+# must render. /settings is checked with a seeded account-state file (see
+# _seed_account_state) so the accounts section's per-account row partials
+# render too — the empty page alone would miss include-level template
+# breakage. Accounts moved off its own /accounts page into Settings (PLAN
+# T30): /accounts is now a redirect there, so the seeded-account check
+# moved to /settings. /setup is checked unconditionally (PLAN T29): the
+# wizard renders regardless of the working-range gate, so this catches its
+# own template breakage the same way. /grid needs a seeded working range
+# (see _seed_settings) — T29's setup-wizard gate would otherwise redirect a
+# fresh, never-configured folder's /grid to /setup instead of rendering the
+# real grid.
 _PAGE_CHECKS = [
     ("/grid", "filter-bar"),
     ("/setup", "Set up Maier"),
     ("/summary", "Summary"),
     ("/dupes", "unresolved"),
-    ("/accounts", "smoke-test@example.com"),
+    ("/settings", "smoke-test@example.com"),
 ]
 
 

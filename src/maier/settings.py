@@ -89,6 +89,7 @@ TEMPLATES = [
             "context_processors": [
                 "django.template.context_processors.debug",
                 "django.template.context_processors.request",
+                "maier.core.context_processors.nav_context",
             ],
         },
     },

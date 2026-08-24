@@ -1,9 +1,11 @@
-{% extends "base.html" %}
-{% block page_name %}accounts{% endblock %}
-{% block content %}
-<a class="back-link" href="{% url 'grid' %}">&larr; Back to grid</a>
-<h1>iCloud accounts</h1>
-
+{% comment %}
+Shared iCloud accounts management block (T18/T21, merged into Settings and
+embedded in the setup wizard by T30). `accounts_owner_url` and
+`accounts_next` come from `views._accounts_context` and identify whichever
+page (settings or setup) is currently hosting this include -- confirm/
+cancel links and the connect/2FA forms' hidden `next` field all build off
+them, so submitting from either host page lands back on that same page.
+{% endcomment %}
 {% if added %}
 <div class="banner success">Added {{ added }}.</div>
 {% endif %}
@@ -31,6 +33,7 @@
 </div>
 {% endif %}
 
+{% if accounts %}
 <table class="accounts-table">
   <thead>
     <tr>
@@ -54,7 +57,7 @@
           <input type="hidden" name="account" value="{{ row.email }}">
           <button type="submit">Pull now</button>
         </form>
-        <a class="disconnect-link" href="?confirm={{ row.email|urlencode }}">Disconnect&hellip;</a>
+        <a class="disconnect-link" href="{{ accounts_owner_url }}?confirm={{ row.email|urlencode }}">Disconnect&hellip;</a>
         {% include "_pull_progress.html" with progress=row.pull_progress account=row.email slug=row.slug %}
         {% if confirm_disconnect == row.email %}
         <div class="disconnect-confirm">
@@ -68,20 +71,26 @@
             <input type="hidden" name="account" value="{{ row.email }}">
             <button type="submit" class="danger">Yes, disconnect</button>
           </form>
-          <a href="{% url 'accounts' %}">Cancel</a>
+          <a href="{{ accounts_owner_url }}">Cancel</a>
         </div>
         {% endif %}
       </td>
     </tr>
-    {% empty %}
-    <tr><td colspan="5" class="empty-state">No accounts attached yet.</td></tr>
     {% endfor %}
   </tbody>
 </table>
+{% else %}
+<p class="empty-state">No accounts attached yet.</p>
+{% endif %}
 
-<h2>Add account</h2>
-<form method="post" action="{% url 'account-login' %}" class="account-form">
+{% if not pending_2fa_email %}
+<button type="button" id="connect-account-btn" class="account-connect-btn{% if login_error %} hidden{% endif %}">Connect iCloud account&hellip;</button>
+{% endif %}
+
+<form method="post" action="{% url 'account-login' %}"
+      class="account-form{% if not login_error %} hidden{% endif %}" id="connect-account-form">
   {% csrf_token %}
+  <input type="hidden" name="next" value="{{ accounts_next }}">
   <label>Email
     <input type="email" name="email" value="{{ prefill_email|default:'' }}" required autocomplete="username">
   </label>
@@ -95,11 +104,12 @@
 {% endif %}
 
 {% if pending_2fa_email %}
-<h2>Enter verification code</h2>
+<h3>Enter verification code</h3>
 <p class="hint">A 2FA code was sent to your Apple devices for {{ pending_2fa_email }}.</p>
 <form method="post" action="{% url 'account-2fa' %}" class="account-form">
   {% csrf_token %}
   <input type="hidden" name="email" value="{{ pending_2fa_email }}">
+  <input type="hidden" name="next" value="{{ accounts_next }}">
   <label>Code
     <input type="text" name="code" inputmode="numeric" required autofocus>
   </label>
@@ -109,4 +119,16 @@
 <div class="banner error">{{ twofa_error }}</div>
 {% endif %}
 {% endif %}
-{% endblock %}
+
+<script>
+(function () {
+  var btn = document.getElementById("connect-account-btn");
+  var form = document.getElementById("connect-account-form");
+  if (btn && form) {
+    btn.addEventListener("click", function () {
+      form.classList.remove("hidden");
+      btn.classList.add("hidden");
+    });
+  }
+})();
+</script>

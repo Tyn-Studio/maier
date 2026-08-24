@@ -18,12 +18,42 @@ import html
 from pathlib import Path
 
 
+class WindowApi:
+    """js_api exposed to the running app window as `window.pywebview.api`
+    (PLAN T30): lets the settings page's "Choose folder..." button open a
+    native folder picker. js_api methods are dispatched by pywebview onto
+    its own GUI thread internally -- this is the documented, safe pattern,
+    unlike calling `create_file_dialog` directly from a Django request
+    thread (pywebview's dialog must run on the thread that owns the
+    window). `_window` is set by `launch_window` right after the window is
+    created, before `webview.start()` blocks.
+    """
+
+    def __init__(self) -> None:
+        self._window = None
+
+    def pick_folder(self) -> str | None:
+        if self._window is None:
+            return None
+        import webview
+
+        try:
+            paths = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+        except Exception:
+            paths = None
+        if not paths:
+            return None
+        return paths[0]
+
+
 def launch_window(url: str, title: str = "Maier") -> None:
     """Open the main app window pointed at `url` and block until closed.
     Must be called from the main thread (pywebview owns it)."""
     import webview
 
-    webview.create_window(title, url, width=1280, height=860)
+    api = WindowApi()
+    window = webview.create_window(title, url, width=1280, height=860, js_api=api)
+    api._window = window
     webview.start()
 
 

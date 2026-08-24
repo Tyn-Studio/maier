@@ -121,16 +121,6 @@ main {
   padding: 0;
 }
 
-.summary-link {
-  align-self: center;
-  padding: 0.35rem 0.6rem;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  color: var(--fg);
-  text-decoration: none;
-  font-size: 0.85rem;
-}
-
 .working-range-link {
   align-self: center;
   padding: 0.35rem 0.6rem;
@@ -140,6 +130,43 @@ main {
   text-decoration: none;
   font-size: 0.8rem;
   white-space: nowrap;
+}
+
+/* --- shared app header (PLAN T30) ---------------------------------- */
+
+.app-header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 1.25rem;
+  padding: 0.6rem 0.75rem;
+  margin-bottom: 0.75rem;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
+}
+
+.app-title {
+  font-weight: 700;
+  font-size: 1rem;
+  color: var(--fg);
+  text-decoration: none;
+}
+
+.app-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.75rem;
+  flex: 1;
+}
+
+.app-nav-link {
+  color: var(--muted);
+  text-decoration: none;
+  font-size: 0.85rem;
+}
+
+.app-nav-link:hover {
+  color: var(--fg);
 }
 
 .setup-step {
@@ -160,17 +187,6 @@ main {
   padding: 0.35rem 0.6rem;
   cursor: pointer;
   font-size: 0.85rem;
-}
-
-.dupes-badge {
-  align-self: center;
-  padding: 0.35rem 0.6rem;
-  border-radius: 4px;
-  border: 1px solid var(--accent);
-  color: var(--accent);
-  text-decoration: none;
-  font-size: 0.85rem;
-  font-weight: 600;
 }
 
 .missing-badge {
@@ -846,17 +862,7 @@ body[data-page="review"] main {
   color: var(--red);
 }
 
-/* --- accounts screen (T18, SPEC §18) ------------------------------------- */
-
-.accounts-link {
-  align-self: center;
-  padding: 0.35rem 0.6rem;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  color: var(--fg);
-  text-decoration: none;
-  font-size: 0.85rem;
-}
+/* --- accounts screen (T18, SPEC §18; merged into Settings by T30) ------- */
 
 .banner.error {
   background: rgba(226, 85, 75, 0.15);
@@ -984,16 +990,36 @@ button.danger {
   font-size: 0.8rem;
 }
 
-/* --- settings / export (T25, PLAN) --------------------------------------- */
+/* --- settings / export (T25, PLAN; single Settings page by T30) --------- */
 
-.settings-link {
-  align-self: center;
-  padding: 0.35rem 0.6rem;
-  border-radius: 4px;
-  border: 1px solid var(--border);
+.settings-section {
+  margin-bottom: 2rem;
+}
+
+.settings-section h2 {
+  margin-bottom: 0.4rem;
+}
+
+#pick-folder-btn {
+  align-self: flex-start;
+  background: var(--bg-raised);
   color: var(--fg);
-  text-decoration: none;
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.35rem 0.6rem;
+  cursor: pointer;
   font-size: 0.85rem;
+}
+
+.account-connect-btn {
+  background: var(--bg-raised);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0.4rem 0.8rem;
+  cursor: pointer;
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
 }
 
 .export-now-form {

@@ -3,11 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Maier</title>
+  <title>{% block title %}Maier{% endblock %}</title>
   <link rel="stylesheet" href="{% static 'maier.css' %}">
   <script src="{% static 'htmx.min.js' %}" defer></script>
 </head>
 <body data-page="{% block page_name %}{% endblock %}" hx-headers='{"X-CSRFToken": "{{ csrf_token }}"}'>
+  {% block header %}
+  {% comment %}
+  Shared app header (PLAN T30) on every page except review, which overrides
+  this block empty in favour of its own immersive top bar. Nav counts/range/
+  update info come from the `nav_context` context processor (settings.py)
+  rather than being threaded through every view -- cheap, three small reads.
+  {% endcomment %}
+  <header class="app-header">
+    <a class="app-title" href="{% url 'grid' %}">Maier</a>
+    <nav class="app-nav">
+      <a class="app-nav-link" href="{% url 'grid' %}">Grid</a>
+      <a class="app-nav-link" href="{% url 'summary' %}">Summary</a>
+      <a class="app-nav-link" href="{% url 'dupes' %}">Dupes{% if nav_unresolved_pair_count %} ({{ nav_unresolved_pair_count }}){% endif %}</a>
+      <a class="app-nav-link" href="{% url 'settings' %}">Settings</a>
+    </nav>
+    <a class="working-range-link" href="{% url 'setup' %}?step=2">Working: {{ nav_working_from|default:"…" }} &rarr; {{ nav_working_to|default:"…" }}</a>
+  </header>
+  {% if nav_update_info %}
+  <div class="banner update-available">
+    Maier {{ nav_update_info.version }} is available &mdash;
+    <a href="{{ nav_update_info.url }}" target="_blank">Download</a>
+  </div>
+  {% endif %}
+  {% endblock %}
+
   <main>
     {% block content %}
     <p>{{ message }}</p>

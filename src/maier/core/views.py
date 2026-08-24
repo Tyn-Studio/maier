@@ -28,7 +28,6 @@ from . import (
     queries,
     remote_state,
     streaming,
-    updates,
 )
 from .icloud import ICloudClient, ICloudError, TwoFactorRequired
 from .models import DuplicatePair, Photo
@@ -167,15 +166,11 @@ def grid(request):
         "filter_from": effective_filters.get("from", ""),
         "filter_to": effective_filters.get("to", ""),
         "filter_dates_low": filters.get("dates") == "low",
-        "unresolved_pair_count": phaseb.unresolved_pair_count(),
         "missing_count": queries.missing_photo_count(),
         "show_missing": filters.get("show") == "missing",
         "total_photo_count": queries.total_photo_count(),
         "scanning": scan_progress is not None,
         "scan_progress": scan_progress,
-        "update_info": updates.latest_known_update(),
-        "working_from_display": current_settings.working_from,
-        "working_to_display": current_settings.working_to,
     }
     template = "_grid_items.html" if request.headers.get("HX-Request") else "grid.html"
     return render(request, template, context)
@@ -474,33 +469,94 @@ def _accounts_rows(folder) -> list[dict]:
     return rows
 
 
-def _accounts_context(request, **extra) -> dict:
+def _accounts_context(request, next_page: str = "settings", **extra) -> dict:
+    """`next_page` is "settings" or "setup" -- which page hosts the shared
+    `_accounts_section.html` partial for this render (PLAN T30: the
+    accounts screen was merged into Settings, and the setup wizard embeds
+    the same section inline for step 1). `accounts_owner_url` /
+    `accounts_next` let the partial's confirm/cancel links and the
+    connect/2FA forms' hidden `next` field build off whichever page is
+    actually hosting them, so a submit from either page lands back on that
+    same page.
+    """
+    owner_url = reverse("setup") if next_page == "setup" else reverse("settings")
     context = {
         "accounts": _accounts_rows(settings.WORKING_FOLDER),
         "download_errors": _recent_download_errors(),
         "added": request.GET.get("added", ""),
-        # T21 two-step confirm: `?confirm=<email>` re-renders the accounts
-        # page with an inline confirmation block for that one row instead of
-        # a JS confirm() dialog (CLAUDE.md hard rule 4).
+        # T21 two-step confirm: `?confirm=<email>` re-renders the host page
+        # with an inline confirmation block for that one row instead of a
+        # JS confirm() dialog (CLAUDE.md hard rule 4).
         "confirm_disconnect": request.GET.get("confirm", ""),
         "disconnected": request.GET.get("disconnected", ""),
+        "accounts_next": next_page,
+        "accounts_owner_url": owner_url,
     }
     context.update(extra)
     return context
 
 
+def _settings_context(request) -> dict:
+    folder = settings.WORKING_FOLDER
+    return {
+        "export_settings": folder_settings.load_settings(folder),
+        "notice": request.GET.get("notice", ""),
+        "export_progress": _current_export_progress(),
+    }
+
+
+def _render_owner_page(request, next_page: str, **accounts_extra):
+    """Re-renders whichever page hosts the accounts section (settings.html
+    normally, setup.html step 1 during onboarding) with an accounts-flow
+    error/pending state -- used by the login/2FA/pull/disconnect views
+    below instead of a redirect when they need to show something instead of
+    just moving on (PLAN T30: both accounts.html and the standalone
+    settings screen were merged/removed, so there is no more dedicated
+    accounts.html to render here).
+    """
+    accounts_ctx = _accounts_context(request, next_page=next_page, **accounts_extra)
+    if next_page == "setup":
+        folder = settings.WORKING_FOLDER
+        has_accounts = bool(remote_state.list_accounts(folder))
+        current = folder_settings.load_settings(folder)
+        context = {
+            "show_step1": not has_accounts,
+            "has_accounts": has_accounts,
+            "working_from": current.working_from,
+            "working_to": current.working_to,
+            **accounts_ctx,
+        }
+        return render(request, "setup.html", context)
+
+    context = _settings_context(request)
+    context.update(accounts_ctx)
+    return render(request, "settings.html", context)
+
+
 def accounts(request):
-    return render(request, "accounts.html", _accounts_context(request))
+    """PLAN T30: `/accounts` is now a redirect to the merged Settings page
+    (URL name kept working since templates/bookmarks may still use it) --
+    any querystring (e.g. a `?confirm=` two-step-confirm link) carries over
+    so old links keep working.
+    """
+    url = reverse("settings")
+    query = request.GET.urlencode()
+    if query:
+        url = f"{url}?{query}"
+    return redirect(url)
 
 
 def account_disconnect(request):
-    """ "Disconnect" (SPEC §18 UI, PLAN T21): removes the account's saved
-    session + its remote DB rows + cached previews. Keeps
-    `icloud-state/{slug}.json` (durable decisions -- re-attaching restores
-    rejections) and everything already in `selected/` (ordinary local files
-    by then). Two-step confirm lives entirely in `accounts.html` (GET
-    `?confirm=<email>` renders the inline confirm block below); this view is
-    only the POST that actually performs it.
+    """ "Disconnect" (SPEC §18 UI, PLAN T21, merged into Settings by T30):
+    removes the account's saved session + its remote DB rows + cached
+    previews. Keeps `icloud-state/{slug}.json` (durable decisions --
+    re-attaching restores rejections) and everything already in
+    `selected/` (ordinary local files by then). Two-step confirm lives
+    entirely in `_accounts_section.html` (GET `?confirm=<email>` on its
+    host page renders the inline confirm block below); this view is only
+    the POST that actually performs it. Disconnect is only ever reached
+    from Settings (the setup wizard's embedded section has no existing
+    accounts to disconnect yet), so errors always re-render there.
     """
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
@@ -511,17 +567,19 @@ def account_disconnect(request):
     try:
         disconnect.disconnect_account(folder, email)
     except disconnect.PullInFlight as exc:
-        context = _accounts_context(request, disconnect_error=str(exc))
-        return render(request, "accounts.html", context)
+        return _render_owner_page(request, "settings", disconnect_error=str(exc))
 
-    return redirect(f"{reverse('accounts')}?disconnected={email}")
+    return redirect(f"{reverse('settings')}?disconnected={email}")
 
 
 def account_login(request):
     """Add-account form target (SPEC §18 UI). The password lives only in
     `request.POST` for the duration of this request -- it is passed
     straight to `ICloudClient.login` and never assigned to any attribute,
-    logged, or written to disk (CLAUDE.md hard rule 8).
+    logged, or written to disk (CLAUDE.md hard rule 8). `next` (PLAN T30)
+    is "settings" (default) or "setup" -- which page's embedded accounts
+    section submitted this form, so success/pending/error all land back on
+    the same one.
     """
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
@@ -529,6 +587,8 @@ def account_login(request):
     folder = settings.WORKING_FOLDER
     email = request.POST.get("email", "").strip()
     password = request.POST.get("password", "")
+    next_page = request.POST.get("next", "settings")
+    owner_url = reverse("setup") if next_page == "setup" else reverse("settings")
 
     try:
         logged_in = ICloudClient.login(email, password)
@@ -537,11 +597,9 @@ def account_login(request):
         # stash the already-authenticated-pending client so the 2FA POST
         # below submits the code on the SAME pyicloud session.
         _pending_2fa[email] = exc.client
-        context = _accounts_context(request, pending_2fa_email=email)
-        return render(request, "accounts.html", context)
+        return _render_owner_page(request, next_page, pending_2fa_email=email)
     except ICloudError as exc:
-        context = _accounts_context(request, login_error=str(exc), prefill_email=email)
-        return render(request, "accounts.html", context)
+        return _render_owner_page(request, next_page, login_error=str(exc), prefill_email=email)
 
     # No 2FA required: ensure a state file exists so the account shows up
     # in list_accounts() even before its first pull.
@@ -549,7 +607,7 @@ def account_login(request):
     # Auto-start the first pull: a freshly attached account with no photos
     # is a UX trap (authenticated-but-empty timeline, 2026-08-24 incident).
     pull.start_background_pull(folder, logged_in)
-    return redirect(f"{reverse('accounts')}?added={email}")
+    return redirect(f"{owner_url}?added={email}")
 
 
 def account_2fa(request):
@@ -559,34 +617,34 @@ def account_2fa(request):
     folder = settings.WORKING_FOLDER
     email = request.POST.get("email", "").strip()
     code = request.POST.get("code", "")
+    next_page = request.POST.get("next", "settings")
+    owner_url = reverse("setup") if next_page == "setup" else reverse("settings")
 
     client = _pending_2fa.pop(email, None)
     if client is None:
-        context = _accounts_context(
+        return _render_owner_page(
             request,
+            next_page,
             login_error=f"No pending login for {email} -- please log in again below.",
         )
-        return render(request, "accounts.html", context)
 
     try:
         verified = client.submit_2fa(code)
     except ICloudError as exc:
         _pending_2fa[email] = client  # keep the pending session for a retry
-        context = _accounts_context(request, pending_2fa_email=email, twofa_error=str(exc))
-        return render(request, "accounts.html", context)
+        return _render_owner_page(request, next_page, pending_2fa_email=email, twofa_error=str(exc))
 
     if not verified:
         _pending_2fa[email] = client  # keep the pending session for a retry
-        context = _accounts_context(
-            request, pending_2fa_email=email, twofa_error="Incorrect verification code."
+        return _render_owner_page(
+            request, next_page, pending_2fa_email=email, twofa_error="Incorrect verification code."
         )
-        return render(request, "accounts.html", context)
 
     remote_state.save_state(folder, remote_state.load_state(folder, email))
     # Auto-start the first pull on the just-verified client (same UX-trap
     # fix as account_login's success path).
     pull.start_background_pull(folder, client)
-    return redirect(f"{reverse('accounts')}?added={email}")
+    return redirect(f"{owner_url}?added={email}")
 
 
 def account_pull(request):
@@ -594,6 +652,9 @@ def account_pull(request):
     path segment (flagged, PLAN T18 brief: avoids mapping an arbitrary
     Apple-ID email on/off a URL-safe slug for routing purposes -- the slug
     is still used for filenames/dirs elsewhere via `remote_state.account_slug`).
+    Only ever reachable from the Settings accounts table (the setup
+    wizard's embedded section has no existing accounts to pull yet), so
+    this always targets Settings.
     """
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
@@ -603,18 +664,18 @@ def account_pull(request):
 
     client = ICloudClient.from_session(email)
     if client is None:
-        context = _accounts_context(
+        return _render_owner_page(
             request,
+            "settings",
             pull_error=f"iCloud session for {email} has expired -- please re-authenticate below.",
             prefill_email=email,
         )
-        return render(request, "accounts.html", context)
 
     pull.start_background_pull(folder, client)
     # Resumes any previously-stuck selected-pending downloads too (e.g. rows
     # left behind by a session expiry on an earlier worker run).
     downloads.start_worker(folder)
-    return redirect("accounts")
+    return redirect("settings")
 
 
 def pull_status(request):
@@ -643,12 +704,12 @@ def _current_export_progress():
 
 
 def settings_page(request):
-    """Per-folder settings screen (PLAN T25): export destination/mode/date-
-    prefix, backed by `folder_settings.json`. A native folder picker isn't
-    wired here (flagged, per brief): pywebview's file dialog must run on the
-    main thread, which a Django request thread never is -- the text input is
-    the only picker in both browser and window mode for now; a proper
-    desktop-window "Choose..." button is a follow-up.
+    """Single per-folder configuration screen (PLAN T30, merging T18's
+    accounts screen and T25's export settings): iCloud accounts, export
+    destination/mode/date-prefix, and the working date range. The native
+    folder picker for the export destination (window mode only) is
+    client-side JS calling `window.pywebview.api.pick_folder()` -- see
+    `window.py`'s `WindowApi`; this view never touches pywebview itself.
     """
     folder = settings.WORKING_FOLDER
 
@@ -658,19 +719,21 @@ def settings_page(request):
         if mode not in (folder_settings.MODE_MANUAL, folder_settings.MODE_AUTOMATIC):
             mode = folder_settings.MODE_MANUAL
         date_prefix = request.POST.get("export_date_prefix") == "on"
+        current = folder_settings.load_settings(folder)
         folder_settings.save_settings(
             folder,
             folder_settings.FolderSettings(
-                export_destination=dest, export_mode=mode, export_date_prefix=date_prefix
+                export_destination=dest,
+                export_mode=mode,
+                export_date_prefix=date_prefix,
+                working_from=current.working_from,
+                working_to=current.working_to,
             ),
         )
         return redirect("settings")
 
-    context = {
-        "export_settings": folder_settings.load_settings(folder),
-        "notice": request.GET.get("notice", ""),
-        "export_progress": _current_export_progress(),
-    }
+    context = _settings_context(request)
+    context.update(_accounts_context(request, next_page="settings"))
     return render(request, "settings.html", context)
 
 
@@ -740,17 +803,25 @@ def setup(request):
         "working_from": current.working_from,
         "working_to": current.working_to,
     }
+    if show_step1:
+        # Step 1 embeds the shared accounts section inline (PLAN T30) so
+        # connect/2FA happen right on the wizard page, no detour to
+        # Settings -- only needed while step 1 is actually shown.
+        context.update(_accounts_context(request, next_page="setup"))
     return render(request, "setup.html", context)
 
 
 def setup_dates(request):
     """Saves the working date range (preset or custom) and redirects to the
-    grid, which is then unblocked by the gate above. Also kicks a background
-    pull for every attached account with a live session -- SPEC intent:
-    changing the range should immediately go fetch the newly-included
-    backlog, not wait for the next manual "Pull now". Expired/never-attached
-    sessions are skipped silently (same as an idle accounts screen -- this
-    is a background nicety, not a hard requirement of saving the range).
+    grid, which is then unblocked by the gate above -- unless the POST
+    carries `next=settings` (PLAN T30: the Settings page's own working-range
+    section reuses this same endpoint), in which case it redirects back to
+    Settings instead. Also kicks a background pull for every attached
+    account with a live session -- SPEC intent: changing the range should
+    immediately go fetch the newly-included backlog, not wait for the next
+    manual "Pull now". Expired/never-attached sessions are skipped silently
+    (same as an idle accounts screen -- this is a background nicety, not a
+    hard requirement of saving the range).
     """
     if request.method != "POST":
         return HttpResponseNotAllowed(["POST"])
@@ -781,4 +852,6 @@ def setup_dates(request):
         if client is not None:
             pull.start_background_pull(folder, client)
 
+    if request.POST.get("next") == "settings":
+        return redirect("settings")
     return redirect("grid")

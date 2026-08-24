@@ -1246,6 +1246,11 @@ def _t18_reset_pending_2fa():
     views_module._pending_2fa.clear()
 
 
+# T30: the standalone /accounts screen was merged into /settings -- the
+# accounts section now renders as part of the Settings page, and /accounts
+# itself is just a redirect there (see the dedicated test below).
+
+
 @pytest.mark.django_db
 def test_t18_accounts_lists_accounts_from_state_files_without_network(client, monkeypatch):
     monkeypatch.setattr(views_module, "ICloudClient", _NoNetworkICloudClient)
@@ -1254,7 +1259,7 @@ def test_t18_accounts_lists_accounts_from_state_files_without_network(client, mo
         settings.WORKING_FOLDER, remote_state.AccountState(account=email, cursor=_CAPTURED)
     )
 
-    response = client.get(reverse("accounts"))
+    response = client.get(reverse("settings"))
 
     assert response.status_code == 200
     rows = response.context["accounts"]
@@ -1270,7 +1275,7 @@ def test_t18_accounts_shows_never_for_account_with_no_pull_yet(client, monkeypat
     email = "t_t18_never@example.com"
     remote_state.save_state(settings.WORKING_FOLDER, remote_state.AccountState(account=email))
 
-    response = client.get(reverse("accounts"))
+    response = client.get(reverse("settings"))
 
     assert "never" in response.content.decode()
     row = next(r for r in response.context["accounts"] if r["email"] == email)
@@ -1290,11 +1295,19 @@ def test_t18_accounts_shows_total_and_pending_counts(client, monkeypatch):
         captured_at=_CAPTURED.replace(hour=20),
     )
 
-    response = client.get(reverse("accounts"))
+    response = client.get(reverse("settings"))
 
     row = next(r for r in response.context["accounts"] if r["email"] == email)
     assert row["total"] == 2
     assert row["pending"] == 1
+
+
+@pytest.mark.django_db
+def test_accounts_redirects_to_settings_preserving_querystring(client):
+    response = client.get(reverse("accounts"), {"confirm": "someone@example.com"})
+
+    assert response.status_code == 302
+    assert response["Location"] == f"{reverse('settings')}?confirm=someone%40example.com"
 
 
 # --- add-account form / 2FA --------------------------------------------------
@@ -1321,7 +1334,7 @@ def test_t18_account_login_success_creates_state_file_and_redirects(client, monk
     response = client.post(reverse("account-login"), {"email": email, "password": "hunter2"})
 
     assert response.status_code == 302
-    assert response["Location"] == f"{reverse('accounts')}?added={email}"
+    assert response["Location"] == f"{reverse('settings')}?added={email}"
     assert email in remote_state.list_accounts(settings.WORKING_FOLDER)
     # Successful attach auto-starts the first pull (an authenticated but
     # empty timeline was a UX trap -- 2026-08-24).
@@ -1396,7 +1409,7 @@ def test_t18_account_2fa_success_creates_state_file_and_redirects(client, monkey
     response = client.post(reverse("account-2fa"), {"email": email, "code": "123456"})
 
     assert response.status_code == 302
-    assert response["Location"] == f"{reverse('accounts')}?added={email}"
+    assert response["Location"] == f"{reverse('settings')}?added={email}"
     assert email in remote_state.list_accounts(settings.WORKING_FOLDER)
     assert email not in views_module._pending_2fa
     assert pending.codes == ["123456"]
@@ -1462,7 +1475,7 @@ def test_t18_account_pull_valid_session_starts_pull_and_worker(client, monkeypat
     response = client.post(reverse("account-pull"), {"account": email})
 
     assert response.status_code == 302
-    assert response["Location"] == reverse("accounts")
+    assert response["Location"] == reverse("settings")
     assert pull_calls == [(settings.WORKING_FOLDER, email)]
     assert worker_calls == [settings.WORKING_FOLDER]
 
@@ -1577,9 +1590,11 @@ def test_t18_review_shows_cloud_and_pending_badges(client):
 
 @pytest.mark.django_db
 def test_t18_grid_shows_accounts_nav_link(client):
+    # T30: iCloud accounts management moved into the merged Settings page --
+    # the shared nav header links there instead of a dedicated /accounts.
     response = client.get(reverse("grid"))
 
-    assert f'href="{reverse("accounts")}"' in response.content.decode()
+    assert f'href="{reverse("settings")}"' in response.content.decode()
 
 
 # --- disconnect account (T21, SPEC §18) ---------------------------------------
@@ -1598,7 +1613,7 @@ def test_t21_accounts_confirm_param_renders_confirm_block_without_deleting(clien
     remote_state.save_state(settings.WORKING_FOLDER, remote_state.AccountState(account=email))
     photo = _remote_db_photo("r_t21_confirm", account=email)
 
-    response = client.get(reverse("accounts"), {"confirm": email})
+    response = client.get(reverse("settings"), {"confirm": email})
 
     body = response.content.decode()
     assert response.status_code == 200
@@ -1614,7 +1629,7 @@ def test_t21_accounts_without_confirm_param_hides_confirm_block(client):
     email = "t_t21_noconfirm@example.com"
     remote_state.save_state(settings.WORKING_FOLDER, remote_state.AccountState(account=email))
 
-    response = client.get(reverse("accounts"))
+    response = client.get(reverse("settings"))
 
     assert "Yes, disconnect" not in response.content.decode()
 
@@ -1632,7 +1647,7 @@ def test_t21_account_disconnect_post_removes_rows_and_previews_then_redirects(cl
     response = client.post(reverse("account-disconnect"), {"account": email})
 
     assert response.status_code == 302
-    assert response["Location"] == f"{reverse('accounts')}?disconnected={email}"
+    assert response["Location"] == f"{reverse('settings')}?disconnected={email}"
     assert not Photo.objects.filter(pk=photo.pk).exists()
     assert not preview_path.exists()
     # Following the redirect shows the success message.
@@ -2019,12 +2034,19 @@ def test_grid_has_export_and_settings_links(client):
 # --- update notification banner (PLAN T27) ----------------------------------
 
 
+# T30: the update banner moved out of grid()'s own context into the shared
+# `nav_context` context processor (base.html's header, present on every
+# page) -- it's `context_processors.updates`, not `views_module.updates`,
+# that's actually called now.
+
+
 @pytest.mark.django_db
 def test_grid_shows_update_banner_when_available(client, monkeypatch):
+    from maier.core import context_processors as context_processors_module
     from maier.core import updates as updates_module
 
     monkeypatch.setattr(
-        views_module.updates,
+        context_processors_module.updates,
         "latest_known_update",
         lambda: updates_module.UpdateInfo(
             version="9.9.9", url="https://github.com/Tyn-Studio/maier/releases/tag/v9.9.9"
@@ -2041,12 +2063,26 @@ def test_grid_shows_update_banner_when_available(client, monkeypatch):
 
 @pytest.mark.django_db
 def test_grid_hides_update_banner_when_absent(client, monkeypatch):
-    monkeypatch.setattr(views_module.updates, "latest_known_update", lambda: None)
+    from maier.core import context_processors as context_processors_module
+
+    monkeypatch.setattr(context_processors_module.updates, "latest_known_update", lambda: None)
 
     response = client.get(reverse("grid"))
 
     body = response.content.decode()
     assert "update-available" not in body
+
+
+@pytest.mark.django_db
+def test_review_has_no_update_banner_markup(client):
+    # Review keeps its own immersive top bar (PLAN T23/T30) -- the shared
+    # header (and its update banner) is suppressed there.
+    photo = _db_photo("t_t30_review_no_header.jpg")
+
+    response = client.get(reverse("review", args=[photo.pk]))
+
+    body = response.content.decode()
+    assert "app-header" not in body
 
 
 # --- setup wizard / working date range gate (PLAN T29) ----------------------
@@ -2081,7 +2117,9 @@ def test_other_pages_never_gated_by_working_range(client, monkeypatch):
         lambda folder: folder_settings.FolderSettings(),
     )
 
-    assert client.get(reverse("accounts")).status_code == 200
+    # /accounts is a redirect (T30), not a page render, but it must still
+    # never bounce to /setup regardless of the working-range gate.
+    assert client.get(reverse("accounts")).status_code == 302
     assert client.get(reverse("settings")).status_code == 200
     assert client.get(reverse("healthz")).status_code == 200
     assert client.get(reverse("setup")).status_code == 200
@@ -2312,3 +2350,163 @@ def test_setup_dates_kicks_pull_for_accounts_with_live_session_only(client, monk
 
     assert response.status_code == 302
     assert calls == [(settings.WORKING_FOLDER, live_email)]
+
+
+# --- T30: merged Settings page, shared nav header, native folder picker -----
+
+
+@pytest.mark.django_db
+def test_setup_dates_next_settings_redirects_to_settings(client):
+    response = client.post(reverse("setup-dates"), {"preset": "everything", "next": "settings"})
+
+    assert response.status_code == 302
+    assert response.url == reverse("settings")
+
+
+@pytest.mark.django_db
+def test_nav_header_present_on_grid_settings_summary_dupes(client):
+    for name in ("grid", "settings", "summary", "dupes"):
+        response = client.get(reverse(name))
+        body = response.content.decode()
+        assert 'class="app-header"' in body, name
+        assert f'href="{reverse("grid")}"' in body, name
+        assert f'href="{reverse("summary")}"' in body, name
+        assert f'href="{reverse("dupes")}"' in body, name
+        assert f'href="{reverse("settings")}"' in body, name
+
+
+@pytest.mark.django_db
+def test_nav_header_absent_on_review(client):
+    photo = _db_photo("t_t30_review_header.jpg")
+
+    response = client.get(reverse("review", args=[photo.pk]))
+
+    assert 'class="app-header"' not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_grid_filter_bar_no_longer_has_moved_nav_links(client):
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    filter_bar = body.split('id="filter-bar"', 1)[1].split("</div>", 1)[0]
+    assert "summary-link" not in filter_bar
+    assert "accounts-link" not in filter_bar
+    assert "settings-link" not in filter_bar
+    assert "working-range-link" not in filter_bar
+    assert "dupes-badge" not in filter_bar
+
+
+@pytest.mark.django_db
+def test_grid_filter_bar_keeps_actual_filters_rescan_export_and_size(client):
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    filter_bar = body.split('id="filter-bar"', 1)[1].split("</div>", 1)[0]
+    assert 'name="status"' in filter_bar
+    assert 'name="provenance"' in filter_bar
+    assert 'name="from"' in filter_bar
+    assert 'name="to"' in filter_bar
+    assert 'id="cell-size"' in filter_bar
+    assert f'hx-post="{reverse("rescan")}"' in filter_bar
+    assert f'action="{reverse("export-now")}"' in filter_bar
+
+
+@pytest.mark.django_db
+def test_setup_step1_embeds_accounts_section(client, monkeypatch):
+    monkeypatch.setattr(views_module.remote_state, "list_accounts", lambda folder: [])
+
+    response = client.get(reverse("setup"))
+
+    body = response.content.decode()
+    assert f'action="{reverse("account-login")}"' in body
+    assert 'name="email"' in body
+
+
+@pytest.mark.django_db
+def test_settings_page_shows_folder_picker_button_hidden_by_default(client):
+    response = client.get(reverse("settings"))
+
+    body = response.content.decode()
+    assert 'id="pick-folder-btn"' in body
+    picker_start = body.index('id="pick-folder-btn"')
+    tag_start = body.rindex("<button", 0, picker_start)
+    tag_end = body.index(">", picker_start)
+    assert "hidden" in body[tag_start:tag_end]
+
+
+@pytest.mark.django_db
+def test_account_login_two_factor_next_setup_renders_setup_page(client, monkeypatch):
+    email = "t_t30_login_2fa_setup@example.com"
+    # WORKING_FOLDER is session-scoped (see test_integration.py's docstring):
+    # earlier tests in this file may have attached other accounts, which
+    # would flip setup()'s has_accounts/show_step1 gate -- pin it explicitly.
+    monkeypatch.setattr(views_module.remote_state, "list_accounts", lambda folder: [])
+
+    class _PendingClient:
+        def __init__(self, account):
+            self.account = account
+
+    pending = _PendingClient(email)
+
+    class _Client:
+        @classmethod
+        def login(cls, e, p):
+            raise views_module.TwoFactorRequired(pending)
+
+    monkeypatch.setattr(views_module, "ICloudClient", _Client)
+
+    response = client.post(
+        reverse("account-login"), {"email": email, "password": "hunter2", "next": "setup"}
+    )
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "Step 1 of 2" in body
+    assert email in body
+    assert 'name="code"' in body
+
+
+@pytest.mark.django_db
+def test_account_login_success_next_setup_redirects_to_setup(client, monkeypatch):
+    email = "t_t30_login_ok_setup@example.com"
+
+    class _Client:
+        def __init__(self, account):
+            self.account = account
+
+        @classmethod
+        def login(cls, e, p):
+            return cls(e)
+
+    monkeypatch.setattr(views_module, "ICloudClient", _Client)
+    monkeypatch.setattr(views_module.pull, "start_background_pull", lambda folder, c: None)
+
+    response = client.post(
+        reverse("account-login"), {"email": email, "password": "hunter2", "next": "setup"}
+    )
+
+    assert response.status_code == 302
+    assert response["Location"] == f"{reverse('setup')}?added={email}"
+
+
+@pytest.mark.django_db
+def test_account_2fa_success_next_setup_redirects_to_setup(client, monkeypatch):
+    email = "t_t30_2fa_ok_setup@example.com"
+
+    class _Pending:
+        def __init__(self, account):
+            self.account = account
+
+        def submit_2fa(self, code):
+            return True
+
+    views_module._pending_2fa[email] = _Pending(email)
+    monkeypatch.setattr(views_module.pull, "start_background_pull", lambda folder, c: None)
+
+    response = client.post(
+        reverse("account-2fa"), {"email": email, "code": "123456", "next": "setup"}
+    )
+
+    assert response.status_code == 302
+    assert response["Location"] == f"{reverse('setup')}?added={email}"

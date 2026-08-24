@@ -1,55 +1,121 @@
 {% extends "base.html" %}
+{% block title %}Maier — Settings{% endblock %}
 {% block page_name %}settings{% endblock %}
 {% block content %}
-<a class="back-link" href="{% url 'grid' %}">&larr; Back to grid</a>
 <h1>Settings</h1>
 
 {% if notice %}
 <div class="banner error">{{ notice }}</div>
 {% endif %}
 
-<h2>Export</h2>
-<p class="hint">
-  Export copies everything currently in <code>selected/</code> to a folder outside this working
-  folder. It never deletes or overwrites anything at the destination -- re-running it only adds
-  what's missing or changed.
-</p>
+<section class="settings-section">
+  <h2>iCloud accounts</h2>
+  {% include "_accounts_section.html" %}
+</section>
 
-<form method="post" action="{% url 'settings' %}" class="settings-form">
-  {% csrf_token %}
-  <label>Destination folder
-    <input type="text" name="export_destination" value="{{ export_settings.export_destination }}"
-           placeholder="/absolute/path/outside/this/folder">
-  </label>
+<section class="settings-section">
+  <h2>Export</h2>
   <p class="hint">
-    A native folder picker isn't wired into this page yet -- pywebview's file dialog has to run on
-    the desktop window's own main thread, not a request thread. Paste or type an absolute path here
-    for now.
+    Export copies everything currently in <code>selected/</code> to a folder outside this working
+    folder. It never deletes or overwrites anything at the destination -- re-running it only adds
+    what's missing or changed.
   </p>
-  <fieldset class="settings-fieldset">
-    <legend>Mode</legend>
-    <label class="filter-checkbox">
-      <input type="radio" name="export_mode" value="manual" {% if export_settings.export_mode == "manual" %}checked{% endif %}>
-      Manual -- only export when I click "Export now"
-    </label>
-    <label class="filter-checkbox">
-      <input type="radio" name="export_mode" value="automatic" {% if export_settings.export_mode == "automatic" %}checked{% endif %}>
-      Automatic -- export every photo as soon as it's selected
-    </label>
-  </fieldset>
-  <label class="filter-checkbox">
-    <input type="checkbox" name="export_date_prefix" {% if export_settings.export_date_prefix %}checked{% endif %}>
-    Prefix exported filenames with the capture date (YYYY-MM-DD_)
-  </label>
-  <button type="submit">Save settings</button>
-</form>
 
-<form method="post" action="{% url 'export-now' %}" class="settings-form">
-  {% csrf_token %}
-  <button type="submit">Export now</button>
-</form>
+  <form method="post" action="{% url 'settings' %}" class="settings-form">
+    {% csrf_token %}
+    <label>Destination folder
+      <input type="text" name="export_destination" id="export-destination-input"
+             value="{{ export_settings.export_destination }}"
+             placeholder="/absolute/path/outside/this/folder">
+    </label>
+    <button type="button" id="pick-folder-btn" class="hidden">Choose folder&hellip;</button>
+    <p class="hint" id="browser-mode-hint">Running in browser &mdash; paste a path above.</p>
+    <fieldset class="settings-fieldset">
+      <legend>Mode</legend>
+      <label class="filter-checkbox">
+        <input type="radio" name="export_mode" value="manual" {% if export_settings.export_mode == "manual" %}checked{% endif %}>
+        Manual -- only export when I click "Export now"
+      </label>
+      <label class="filter-checkbox">
+        <input type="radio" name="export_mode" value="automatic" {% if export_settings.export_mode == "automatic" %}checked{% endif %}>
+        Automatic -- export every photo as soon as it's selected
+      </label>
+    </fieldset>
+    <label class="filter-checkbox">
+      <input type="checkbox" name="export_date_prefix" {% if export_settings.export_date_prefix %}checked{% endif %}>
+      Prefix exported filenames with the capture date (YYYY-MM-DD_)
+    </label>
+    <button type="submit">Save settings</button>
+  </form>
 
-<div id="export-status-wrap">
-  {% include "_export_progress.html" with progress=export_progress %}
-</div>
+  <form method="post" action="{% url 'export-now' %}" class="settings-form">
+    {% csrf_token %}
+    <button type="submit">Export now</button>
+  </form>
+
+  <div id="export-status-wrap">
+    {% include "_export_progress.html" with progress=export_progress %}
+  </div>
+</section>
+
+<section class="settings-section">
+  <h2>Working date range</h2>
+  <p class="hint">
+    Heavy background work (iCloud thumbnail downloads, duplicate detection) is scoped to this date
+    range to keep a large library responsive. All metadata is still indexed across the whole
+    library -- the timeline and duplicate detection stay complete.
+  </p>
+  <p class="hint">Currently: {{ export_settings.working_from|default:"…" }} &rarr; {{ export_settings.working_to|default:"…" }}</p>
+
+  <form method="post" action="{% url 'setup-dates' %}" class="setup-form settings-form">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="settings">
+    <div class="setup-presets">
+      <button type="submit" name="preset" value="last_month">Last month</button>
+      <button type="submit" name="preset" value="last_3_months">Last 3 months</button>
+      <button type="submit" name="preset" value="last_year">Last year</button>
+      <button type="submit" name="preset" value="everything">Everything</button>
+    </div>
+  </form>
+
+  <form method="post" action="{% url 'setup-dates' %}" class="setup-form settings-form">
+    {% csrf_token %}
+    <input type="hidden" name="next" value="settings">
+    <label>From <input type="date" name="from" value="{{ export_settings.working_from }}"></label>
+    <label>To <input type="date" name="to" value="{{ export_settings.working_to }}"></label>
+    <button type="submit">Save custom range</button>
+  </form>
+</section>
+
+<script>
+(function () {
+  // Native folder picker (PLAN T30): only available in the pywebview
+  // desktop window, where `window.pywebview` is injected. In browser mode
+  // it's never present, so the button stays hidden and the hint (pointing
+  // at the plain text input) stays visible instead.
+  var btn = document.getElementById("pick-folder-btn");
+  var hint = document.getElementById("browser-mode-hint");
+  var input = document.getElementById("export-destination-input");
+
+  function revealPicker() {
+    if (!btn) return;
+    btn.classList.remove("hidden");
+    if (hint) hint.classList.add("hidden");
+  }
+
+  if (window.pywebview) {
+    revealPicker();
+  } else {
+    window.addEventListener("pywebviewready", revealPicker);
+  }
+
+  if (btn) {
+    btn.addEventListener("click", function () {
+      window.pywebview.api.pick_folder().then(function (path) {
+        if (path) input.value = path;
+      });
+    });
+  }
+})();
+</script>
 {% endblock %}

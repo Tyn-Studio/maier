@@ -1,12 +1,7 @@
 {% extends "base.html" %}
+{% block title %}Maier — Grid{% endblock %}
 {% block page_name %}grid{% endblock %}
 {% block content %}
-{% if update_info %}
-<div class="banner update-available">
-  Maier {{ update_info.version }} is available &mdash;
-  <a href="{{ update_info.url }}" target="_blank">Download</a>
-</div>
-{% endif %}
 <div id="scan-banner">
   {% include "_scan_banner.html" with progress=scan_progress %}
 </div>
@@ -43,17 +38,10 @@
     <input type="range" id="cell-size" min="120" max="340" step="20" value="180">
   </label>
   <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-poller" hx-swap="outerHTML">Rescan</button>
-  <a class="working-range-link" href="{% url 'setup' %}?step=2">Working: {{ working_from_display|default:"…" }} &rarr; {{ working_to_display|default:"…" }}</a>
-  <a class="summary-link" href="{% url 'summary' %}">Summary</a>
-  <a class="accounts-link" href="{% url 'accounts' %}">Accounts</a>
-  <a class="settings-link" href="{% url 'settings' %}">Settings</a>
   <form method="post" action="{% url 'export-now' %}" class="export-now-form">
     {% csrf_token %}
     <button type="submit">Export &uarr;</button>
   </form>
-  {% if unresolved_pair_count %}
-  <a class="dupes-badge" href="{% url 'dupes' %}">Dupes ({{ unresolved_pair_count }})</a>
-  {% endif %}
   {% if missing_count %}
     {% if show_missing %}
     <a class="missing-badge" href="{% url 'grid' %}">&larr; All photos</a>
