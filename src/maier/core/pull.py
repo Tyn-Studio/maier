@@ -144,14 +144,33 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
 
         counters_lock = threading.Lock()
 
-        # Backlog items whose asset the client hasn't cached yet are DEFERRED
-        # until the enumeration below has cached them: a cache-miss download
-        # walks the album via `photos.all.get(id)`, which contends with the
-        # active enumeration over the album's shared pagination and starves
-        # every worker (observed live: "previews 0 / 2788" for minutes,
-        # 2026-08-24). Duck-typed via `has_asset_cached` -- fakes without it
-        # never defer.
-        has_cached = getattr(client, "has_asset_cached", None)
+        # Cache-miss preview downloads walk the album via `photos.all.get(id)`,
+        # which CONTENDS with the active enumeration over the album's shared
+        # pagination and starves every worker (observed live: "previews
+        # 0 / 2788" for minutes, 2026-08-24). Two-layer fix:
+        #  1. Preferred: give the workers their OWN client (independent
+        #     pyicloud session + album) via from_session -- uncontended
+        #     `.get(id)` lookups are fast (~2s incl. download, probed live),
+        #     so in-range previews flow from the first seconds even while
+        #     the enumeration runs. (Deferring them instead just reproduced
+        #     the gray-grid for the whole enumeration -- v0.1.1 regression.)
+        #  2. Fallback (no second session available -- expired mid-pull, or
+        #     a test fake without from_session): defer cache misses until
+        #     the enumeration has cached them, via `has_asset_cached`.
+        preview_client = client
+        from_session = getattr(type(client), "from_session", None)
+        if from_session is not None:
+            try:
+                second = from_session(client.account)
+            except Exception:
+                second = None
+            if second is not None:
+                preview_client = second
+        has_cached = (
+            None
+            if preview_client is not client
+            else getattr(client, "has_asset_cached", None)
+        )
         deferred: list[tuple[str, str]] = []
         deferred_lock = threading.Lock()
 
@@ -172,7 +191,7 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
                         with deferred_lock:
                             deferred.append((rid, media_type))
                         return  # done is counted when the deferred fetch runs
-                    client.download(rid, version, dest)
+                    preview_client.download(rid, version, dest)
             except Exception as exc:
                 err = f"{rid}: preview fetch failed: {exc}"
             with counters_lock:
