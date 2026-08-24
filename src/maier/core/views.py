@@ -14,6 +14,7 @@ from . import (
     disconnect,
     downloads,
     phaseb,
+    preview_upgrade,
     previews,
     pull,
     queries,
@@ -37,6 +38,12 @@ _pending_2fa: dict[str, ICloudClient] = {}
 PAGE_SIZE = 200
 NEIGHBOUR_WINDOW = 10
 
+# T22: filmstrip neighbours prefetched alongside the current photo's own
+# thumb->medium upgrade -- deliberately much narrower than NEIGHBOUR_WINDOW
+# (±10, for the visible filmstrip thumbnails) since each one costs ~1MB.
+SHARP_PREFETCH_RADIUS = 3
+SHARP_MAX_TRIES = 15  # ~12s of polling (load delay:800ms) before giving up
+
 
 def healthz(request):
     return HttpResponse("ok")
@@ -58,6 +65,35 @@ def preview(request, pk):
         response["Cache-Control"] = "no-store"
     else:
         response["Cache-Control"] = "public, max-age=31536000, immutable"
+    return response
+
+
+def preview_sharp(request, pk):
+    """T22 review-screen quality upgrade: remote rows serve the best cached
+    tier (medium if it landed, else the bulk thumb, else the placeholder --
+    `previews.best_remote_preview`, never a network fetch from this request
+    path); local rows just serve the ordinary `preview_path` result. Cache
+    headers mirror `preview()`'s no-store-for-placeholder rule, extended to
+    "no-store for anything short of medium" for remote rows -- otherwise the
+    browser would pin the soft thumb (or gray placeholder) forever the first
+    time this URL is hit, before the medium has had a chance to land.
+    """
+    photo = get_object_or_404(Photo, pk=pk)
+    folder = settings.WORKING_FOLDER
+
+    if photo.source != Photo.SOURCE_ICLOUD:
+        path = previews.preview_path(folder, photo)
+        response = FileResponse(path.open("rb"), content_type="image/jpeg")
+        response["Cache-Control"] = "public, max-age=31536000, immutable"
+        return response
+
+    medium_dest = previews.remote_medium_dest(folder, photo.account, photo.remote_id or "")
+    path = previews.best_remote_preview(folder, photo)
+    response = FileResponse(path.open("rb"), content_type="image/jpeg")
+    if path == medium_dest:
+        response["Cache-Control"] = "public, max-age=31536000, immutable"
+    else:
+        response["Cache-Control"] = "no-store"
     return response
 
 
@@ -148,8 +184,62 @@ def review(request, pk):
         "total": len(ordered_pks),
         "dupe_count": dupe_count,
         "filesize_display": queries.human_size(photo.file_size),
+        **_sharp_preview_context(settings.WORKING_FOLDER, photo, ordered_pks, idx),
     }
     return render(request, "review.html", context)
+
+
+def _sharp_preview_context(folder, photo: Photo, ordered_pks: list[int], idx: int | None) -> dict:
+    """T22: for a remote (non-video) photo, kick off its own thumb->medium
+    upgrade plus its nearest filmstrip neighbours' (they're the next photos
+    the user is likely to land on), and hand `review.html` what it needs to
+    render the initial poller partial. Local photos and remote videos get an
+    empty dict -- `review.html` never includes the poller partial for them.
+    """
+    if photo.source != Photo.SOURCE_ICLOUD or photo.media_type == Photo.MEDIA_VIDEO:
+        return {}
+
+    preview_upgrade.enqueue_medium(folder, photo)
+
+    if idx is not None:
+        neighbour_pks: list[int] = []
+        for offset in range(1, SHARP_PREFETCH_RADIUS + 1):
+            if idx - offset >= 0:
+                neighbour_pks.append(ordered_pks[idx - offset])
+            if idx + offset < len(ordered_pks):
+                neighbour_pks.append(ordered_pks[idx + offset])
+        for neighbour in Photo.objects.filter(pk__in=neighbour_pks, source=Photo.SOURCE_ICLOUD):
+            preview_upgrade.enqueue_medium(folder, neighbour)
+
+    medium_dest = previews.remote_medium_dest(folder, photo.account, photo.remote_id or "")
+    return {"medium_ready": medium_dest.exists(), "tries": 0, "max_tries": SHARP_MAX_TRIES}
+
+
+def sharp_status(request, pk):
+    """One step of the review image's recursive load-polling
+    (`_review_sharp.html`, mirrors `scan_status`/`_scan_banner.html`): a
+    medium that has landed ends the chain with the sharp `<img>`; otherwise
+    the same poller re-renders, up to `SHARP_MAX_TRIES` (~12s) before giving
+    up and leaving the thumb. Re-issues `enqueue_medium` on every poll
+    (cheap no-op once cached or already pending) so a worker restart mid-
+    poll self-heals without waiting for the photo to be reopened.
+    """
+    photo = get_object_or_404(Photo, pk=pk)
+    folder = settings.WORKING_FOLDER
+    tries = int(request.GET.get("tries") or 0)
+
+    medium_dest = previews.remote_medium_dest(folder, photo.account, photo.remote_id or "")
+    medium_ready = medium_dest.exists()
+    if not medium_ready:
+        preview_upgrade.enqueue_medium(folder, photo)
+
+    context = {
+        "photo": photo,
+        "medium_ready": medium_ready,
+        "tries": tries,
+        "max_tries": SHARP_MAX_TRIES,
+    }
+    return render(request, "_review_sharp.html", context)
 
 
 def set_status(request, pk):

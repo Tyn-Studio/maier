@@ -4,10 +4,12 @@ from datetime import UTC, datetime
 import pytest
 from django.conf import settings
 from django.urls import reverse
+from PIL import Image
 
 from fixtures import build_fixture_folder
 from maier.core import disconnect as disconnect_module
 from maier.core import downloads as downloads_module
+from maier.core import previews as previews_module
 from maier.core import pull as pull_module
 from maier.core import remote_state
 from maier.core import scan as scan_module
@@ -1680,3 +1682,156 @@ def test_t21_account_disconnect_keeps_state_file_and_local_selected_row(client):
     assert email in remote_state.list_accounts(settings.WORKING_FOLDER)
     local_photo.refresh_from_db()
     assert local_photo.source == Photo.SOURCE_LOCAL
+
+
+# --- T22: on-demand sharp preview upgrade (review screen) -------------------
+
+
+@pytest.mark.django_db
+def test_review_remote_photo_enqueues_self_and_nearest_remote_neighbours(client, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        views_module.preview_upgrade,
+        "enqueue_medium",
+        lambda folder, photo: calls.append(photo.pk),
+    )
+    day = "2030-06-14"
+    base = datetime(2030, 6, 14, 8, 0, tzinfo=UTC)
+
+    def _at(minute):
+        return base.replace(minute=minute)
+
+    p_far_left = _remote_db_photo("t22_far_left", captured_at=_at(0))
+    p_b = _remote_db_photo("t22_b", captured_at=_at(2))
+    # A LOCAL photo sitting inside the ±3 window -- must be excluded from
+    # the enqueue set even though it's a filmstrip-window neighbour.
+    local_between = _db_photo("t22_local/mid.jpg", provenance="t22_local", captured_at=_at(4))
+    p_c = _remote_db_photo("t22_c", captured_at=_at(6))
+    target = _remote_db_photo("t22_target", captured_at=_at(8))
+    p_d = _remote_db_photo("t22_d", captured_at=_at(10))
+    p_e = _remote_db_photo("t22_e", captured_at=_at(12))
+    p_f = _remote_db_photo("t22_f", captured_at=_at(14))
+    p_far_right = _remote_db_photo("t22_far_right", captured_at=_at(16))
+
+    response = client.get(reverse("review", args=[target.pk]), {"from": day, "to": day})
+
+    assert response.status_code == 200
+    expected = {target.pk, p_b.pk, p_c.pk, p_d.pk, p_e.pk, p_f.pk}
+    assert set(calls) == expected
+    assert local_between.pk not in calls
+    assert p_far_left.pk not in calls
+    assert p_far_right.pk not in calls
+
+
+@pytest.mark.django_db
+def test_review_remote_video_does_not_enqueue_sharp_upgrade(client, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        views_module.preview_upgrade,
+        "enqueue_medium",
+        lambda folder, photo: calls.append(photo.pk),
+    )
+    video = _remote_db_photo("t22_video", media_type=Photo.MEDIA_VIDEO)
+
+    response = client.get(reverse("review", args=[video.pk]))
+
+    assert response.status_code == 200
+    assert calls == []
+
+
+@pytest.mark.django_db
+def test_review_local_photo_has_no_poller_markup(client):
+    photo = _db_photo("t22_local_no_poller.jpg")
+
+    response = client.get(reverse("review", args=[photo.pk]))
+
+    body = response.content.decode()
+    assert 'id="review-still"' in body
+    assert "review-sharp-wrap" not in body
+    assert reverse("sharp-status", args=[photo.pk]) not in body
+
+
+@pytest.mark.django_db
+def test_preview_sharp_serves_thumb_no_store_then_medium_immutable(client):
+    account = "luis@example.com"
+    remote_id = "t22_sharp_serve"
+    photo = _remote_db_photo(remote_id, account=account)
+    thumb_dest = previews_module.remote_preview_dest(settings.WORKING_FOLDER, account, remote_id)
+    thumb_dest.parent.mkdir(parents=True, exist_ok=True)
+    thumb_dest.write_bytes(b"thumb-bytes")
+
+    response = client.get(reverse("preview-sharp", args=[photo.pk]))
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "no-store"
+    assert b"".join(response.streaming_content) == b"thumb-bytes"
+
+    medium_dest = previews_module.remote_medium_dest(settings.WORKING_FOLDER, account, remote_id)
+    medium_dest.write_bytes(b"medium-bytes")
+
+    response = client.get(reverse("preview-sharp", args=[photo.pk]))
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "public, max-age=31536000, immutable"
+    assert b"".join(response.streaming_content) == b"medium-bytes"
+
+
+@pytest.mark.django_db
+def test_preview_sharp_placeholder_is_never_cached(client):
+    photo = _remote_db_photo("t22_sharp_placeholder")
+
+    response = client.get(reverse("preview-sharp", args=[photo.pk]))
+
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "no-store"
+
+
+@pytest.mark.django_db
+def test_preview_sharp_local_photo_is_immutable(client):
+    src = settings.WORKING_FOLDER / "t22_local_sharp.jpg"
+    Image.new("RGB", (40, 30), (10, 20, 30)).save(src, "JPEG")
+    photo = _db_photo("t22_local_sharp.jpg")
+
+    response = client.get(reverse("preview-sharp", args=[photo.pk]))
+
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "public, max-age=31536000, immutable"
+
+
+@pytest.mark.django_db
+def test_sharp_status_polls_when_medium_absent(client):
+    photo = _remote_db_photo("t22_status_poll")
+
+    response = client.get(reverse("sharp-status", args=[photo.pk]))
+
+    body = response.content.decode()
+    assert "hx-get" in body
+    assert reverse("sharp-status", args=[photo.pk]) in body
+    assert "tries=1" in body
+    assert reverse("preview-sharp", args=[photo.pk]) in body
+    assert "v=medium" not in body
+
+
+@pytest.mark.django_db
+def test_sharp_status_returns_final_img_when_medium_ready(client):
+    account = "luis@example.com"
+    remote_id = "t22_status_ready"
+    photo = _remote_db_photo(remote_id, account=account)
+    medium_dest = previews_module.remote_medium_dest(settings.WORKING_FOLDER, account, remote_id)
+    medium_dest.parent.mkdir(parents=True, exist_ok=True)
+    medium_dest.write_bytes(b"medium")
+
+    response = client.get(reverse("sharp-status", args=[photo.pk]))
+
+    body = response.content.decode()
+    assert "hx-get" not in body
+    assert "v=medium" in body
+
+
+@pytest.mark.django_db
+def test_sharp_status_stops_polling_after_max_tries(client):
+    photo = _remote_db_photo("t22_status_max_tries")
+
+    response = client.get(reverse("sharp-status", args=[photo.pk]), {"tries": 15})
+
+    body = response.content.decode()
+    assert "hx-get" not in body
+    assert "v=medium" not in body

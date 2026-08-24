@@ -90,12 +90,49 @@ def _generate_image_preview(src: Path, dest: Path) -> None:
 
 
 def remote_preview_dest(folder: Path, account: str, remote_id: str) -> Path:
-    """Cache path for a remote (iCloud) photo's prefetched medium preview
-    (SPEC §18: "Thumbnails/medium previews cache under `.maier/previews/`
-    keyed by `remote_id`"). Shared with `core/pull.py`, which writes the
-    file at this exact path -- keep the two in sync.
+    """Cache path for a remote (iCloud) photo's bulk-synced "thumb" tier
+    (~60KB, plenty for grid cells -- SPEC §18: "Thumbnails/medium previews
+    cache under `.maier/previews/` keyed by `remote_id`"). Despite the name,
+    this is the THUMB tier as of PLAN T22 (2026-08-24): `pull.py` fetches
+    "thumb"/"thumb_image" into this path for every remote row so the grid is
+    fully browsable without waiting on the much larger "medium" tier. The
+    grid keeps using this path forever -- `preview_path` below is unchanged.
+    Sharper on-demand quality for the review screen lives at
+    `remote_medium_dest` instead (PLAN T22, `core/preview_upgrade.py`).
+    Shared with `core/pull.py`, which writes the file at this exact path --
+    keep the two in sync.
     """
     return _previews_dir(folder) / f"icloud-{_account_slug(account)}-{remote_id}.jpg"
+
+
+def remote_medium_dest(folder: Path, account: str, remote_id: str) -> Path:
+    """Cache path for a remote (iCloud) photo's on-demand "medium" preview
+    (PLAN T22, CTO-approved 2026-08-24 design: thumb-first instant render,
+    background medium swap-in, neighbour prefetch). Fetched at most once per
+    photo, ever, only when it's actually opened in the review screen (~1MB
+    at review-quality vs. the bulk thumb's ~60KB) -- cached forever
+    afterwards, same as every other preview tier. Shared with
+    `core/preview_upgrade.py`, which writes the file at this exact path.
+    """
+    return _previews_dir(folder) / f"icloud-{_account_slug(account)}-{remote_id}-medium.jpg"
+
+
+def best_remote_preview(folder: Path, photo: Photo) -> Path:
+    """Best cached preview for a remote row, without ever hitting the
+    network from the request path (PLAN T22, mirrors `preview_path`'s own
+    "never raises, never fetches" contract): the sharp on-demand "medium" if
+    it has landed, else the bulk-synced "thumb", else the shared
+    placeholder. Callers upgrade a photo to medium in the background via
+    `core.preview_upgrade.enqueue_medium` -- this function only reads
+    whatever is already on disk.
+    """
+    medium = remote_medium_dest(folder, photo.account, photo.remote_id or "")
+    if medium.exists():
+        return medium
+    thumb = remote_preview_dest(folder, photo.account, photo.remote_id or "")
+    if thumb.exists():
+        return thumb
+    return _placeholder_path(folder)
 
 
 def preview_path(folder: Path, photo: Photo) -> Path:

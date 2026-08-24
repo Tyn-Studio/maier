@@ -1,0 +1,23 @@
+{% comment %}
+Recursive load-polling for the review screen's on-demand "medium" (sharp)
+preview upgrade (PLAN T22, CTO-approved design: thumb-first instant render,
+background medium swap-in). The grid stays on the bulk "thumb" tier forever
+(SPEC §18 / PLAN 2026-08-24 "Round 2") -- a photo actually opened in review
+is worth the ~1MB "medium" fetch, once, ever. `review()` renders this
+partial first (thumb-quality behind `preview-sharp`, already-cached medium
+served immediately); `sharp_status` re-renders it every ~800ms until the
+medium lands, capped at `max_tries` (~12s) after which polling just stops
+and the thumb stays -- same idiom as `_scan_banner.html`/`_pull_progress.html`.
+{% endcomment %}
+{% comment %}The wrapper div also carries `review-image` (same 100%/100%
+sizing as the plain <img> markup used for local photos) so swapping this
+partial in doesn't change the review-image-area's flex layout.{% endcomment %}
+{% if medium_ready %}
+<div id="review-sharp-wrap" class="review-image"><img id="review-still" class="review-image" src="{% url 'preview-sharp' photo.pk %}?v=medium" alt=""></div>
+{% elif tries >= max_tries %}
+<div id="review-sharp-wrap" class="review-image"><img id="review-still" class="review-image" src="{% url 'preview-sharp' photo.pk %}" alt=""></div>
+{% else %}
+<div id="review-sharp-wrap" class="review-image" hx-get="{% url 'sharp-status' photo.pk %}?tries={{ tries|add:1 }}" hx-trigger="load delay:800ms" hx-target="this" hx-swap="outerHTML">
+  <img id="review-still" class="review-image" src="{% url 'preview-sharp' photo.pk %}" alt="">
+</div>
+{% endif %}
