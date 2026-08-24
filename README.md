@@ -82,6 +82,48 @@ in the UI. Moves mirror this substructure: selecting `apple-luis/IMG_1.jpg`
 moves it to `selected/apple-luis/IMG_1.jpg`, so provenance and directory
 layout survive culling.
 
+## iCloud accounts
+
+Culler can also pull directly from one or more iCloud (Apple ID) accounts
+and cull those photos in the same timeline as your local files — no export
+step needed for that source. Open the **Accounts** screen, add an account
+(email + password + 2FA code if prompted), then **Pull now**. Remote photos
+show up alongside local ones, sorted by capture date, with a cloud badge.
+
+A few things worth knowing before you connect an account:
+
+- **Thumbnail-first, originals only on select.** Pulling an account fetches
+  metadata and a medium-quality preview for every photo — enough to browse
+  and cull with the usual keys. The full-resolution original is only
+  downloaded when you select (`P`) a photo, landing at
+  `selected/<account>/…`. Rejected and undecided remote photos never touch
+  your disk.
+- **Nothing in iCloud is ever modified.** Culler only ever reads metadata
+  and downloads image data from your account — no deletes, no album
+  changes, no writes of any kind. Rejecting a photo locally never touches
+  iCloud; it only records a local decision.
+- **Your password is never stored.** It's used once, in memory, to sign in;
+  only the resulting session/trust token is kept (in your user data
+  directory, alongside the exiftool download), and it expires after roughly
+  a month. When that happens you'll see a re-authenticate prompt on the
+  Accounts screen — no photos are lost, you just sign in again.
+- **Advanced Data Protection.** If an account has ADP enabled, Apple's web
+  API can't see its library unless "Access iCloud Data on the Web" is
+  turned on for that account (Settings → Apple ID → iCloud → Advanced Data
+  Protection).
+- **Where state lives.** Per-account pull progress and cull decisions for
+  not-yet-downloaded photos live in `icloud-state/` at the top of your
+  working folder — deliberately *not* inside `.culler/`, so they survive
+  cache deletion and travel with the folder. Once a photo is downloaded, it
+  becomes an ordinary local file and behaves exactly like the rest of your
+  library.
+- **Unofficial API.** This feature is built on Apple's undocumented iCloud
+  web API (via the `pyicloud` project), the same approach used by tools
+  like `icloudpd`. It isn't officially supported by Apple and can break if
+  Apple changes that API — treat it as best-effort, and keep your own
+  Photos app / iCloud.com as the source of truth for anything you can't
+  afford to lose track of.
+
 ## Keyboard shortcuts
 
 | Key | Action |
