@@ -9,7 +9,7 @@ from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotAllo
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from . import phaseb, previews, queries, streaming
+from . import culling, phaseb, previews, queries, streaming
 from .models import DuplicatePair, Photo
 
 _DUPE_ACTIONS = {"keep_left", "keep_right", "keep_both", "defer"}
@@ -62,6 +62,7 @@ def grid(request):
     for photo in page_photos:
         photo.dupe_count = dupe_counts.get(photo.sha256, 0)
         photo.is_live = bool(photo.live_photo_video_path)
+        photo.download_pending = _download_pending(photo)
 
     scan_progress = _in_flight_scan_progress()
 
@@ -104,8 +105,11 @@ def review(request, pk):
 
     photos_by_pk = {p.pk: p for p in Photo.objects.filter(pk__in=filmstrip_pks)}
     filmstrip = [photos_by_pk[fpk] for fpk in filmstrip_pks if fpk in photos_by_pk]
+    for fphoto in filmstrip:
+        fphoto.download_pending = _download_pending(fphoto)
 
     dupe_count = phaseb.duplicate_counts().get(photo.sha256, 0) if photo.sha256 else 0
+    photo.download_pending = _download_pending(photo)
 
     context = {
         "photo": photo,
@@ -130,11 +134,15 @@ def set_status(request, pk):
     qs = request.POST.get("qs", "")
 
     try:
-        photo = phaseb.apply_status_to_group(settings.WORKING_FOLDER, photo, new_status)
+        photo = culling.apply_status_any(settings.WORKING_FOLDER, photo, new_status)
     except ValueError:
         return HttpResponse("invalid status", status=400)
     except FileNotFoundError:
         return HttpResponse("file moved or deleted outside Culler", status=409)
+    except culling.AccountSessionExpired as exc:
+        # Not currently raised (see culling.py's docstring) -- kept so a
+        # future synchronous session check has a status code to land on.
+        return HttpResponse(f"iCloud session expired for {exc.account}", status=409)
 
     if context_mode == "review":
         next_id = request.POST.get("next")
@@ -147,7 +155,17 @@ def set_status(request, pk):
 
     photo.dupe_count = phaseb.duplicate_counts().get(photo.sha256, 0) if photo.sha256 else 0
     photo.is_live = bool(photo.live_photo_video_path)
+    photo.download_pending = _download_pending(photo)
     return render(request, "_grid_cell.html", {"photo": photo, "querystring": qs})
+
+
+def _download_pending(photo: Photo) -> bool:
+    """SPEC §18: a selected remote photo whose original hasn't landed yet
+    (still `source="icloud"`) -- once the download worker converts the row
+    to `source="local"` this is cheaply false, no per-photo state-file read
+    needed (PLAN T17 brief: "cheap; no per-photo state reads").
+    """
+    return photo.source == Photo.SOURCE_ICLOUD and photo.status == Photo.STATUS_SELECTED
 
 
 def _in_flight_scan_progress():
@@ -233,13 +251,13 @@ def resolve_pair(request, pair_id):
     folder = settings.WORKING_FOLDER
     try:
         if action == "keep_left":
-            phaseb.apply_status_to_group(folder, pair.photo_a, Photo.STATUS_SELECTED)
-            phaseb.apply_status_to_group(folder, pair.photo_b, Photo.STATUS_REJECTED)
+            culling.apply_status_any(folder, pair.photo_a, Photo.STATUS_SELECTED)
+            culling.apply_status_any(folder, pair.photo_b, Photo.STATUS_REJECTED)
             pair.resolved = True
             pair.save(update_fields=["resolved"])
         elif action == "keep_right":
-            phaseb.apply_status_to_group(folder, pair.photo_b, Photo.STATUS_SELECTED)
-            phaseb.apply_status_to_group(folder, pair.photo_a, Photo.STATUS_REJECTED)
+            culling.apply_status_any(folder, pair.photo_b, Photo.STATUS_SELECTED)
+            culling.apply_status_any(folder, pair.photo_a, Photo.STATUS_REJECTED)
             pair.resolved = True
             pair.save(update_fields=["resolved"])
         elif action == "keep_both":
@@ -249,6 +267,8 @@ def resolve_pair(request, pair_id):
         # next pair after this one, wrapping around, without resolving it.
     except FileNotFoundError:
         return HttpResponse("file moved or deleted outside Culler", status=409)
+    except culling.AccountSessionExpired as exc:
+        return HttpResponse(f"iCloud session expired for {exc.account}", status=409)
 
     url = f"{reverse('dupes')}?after={pair.pk}"
     response = HttpResponse(status=200)

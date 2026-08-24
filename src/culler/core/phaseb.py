@@ -402,7 +402,31 @@ def apply_status_to_group(folder: Path, photo: Photo, new_status: str) -> Photo:
     already there. Never auto-restores: unflagging the representative later
     leaves redundant copies in `rejected/` (SPEC §17.3). Falls back to a
     plain `moves.apply_status` when the photo has no sha256 / no group.
+
+    Remote (iCloud) primary photos (PLAN T17, flagged): the primary photo's
+    own status change is delegated to `culling._apply_remote_status` instead
+    of `moves.apply_status` -- a plain move would try to rename the row's
+    non-existent `@icloud/...` sentinel path and raise `FileNotFoundError`.
+    Local primary photos are unaffected (still a direct `moves.apply_status`
+    call, unchanged) -- `core/culling.py`'s own dispatcher already only ever
+    reaches this function with a local photo, so this branch only matters
+    for callers that pass a remote photo directly. Group *members* are never
+    remote (remote rows are excluded from Phase B hashing, so they never
+    carry a sha256 and never join a dupe group either way).
     """
+    if photo.source == Photo.SOURCE_ICLOUD:
+        # Imported inline (like scan.py's own `from . import phaseb`) to
+        # avoid a module import cycle: culling.py imports phaseb.py for the
+        # local branch of `apply_status_any`. Calling the private
+        # `_apply_remote_status` (not `apply_status_any`) is deliberate: the
+        # public dispatcher would route a local photo straight back into
+        # this function, but every photo reaching this branch is already
+        # confirmed remote, so that recursion risk doesn't apply here --
+        # this just reuses culling's remote-status logic directly.
+        from . import culling
+
+        return culling._apply_remote_status(Path(folder), photo, new_status)
+
     updated = moves.apply_status(folder, photo, new_status)
     if not updated.sha256:
         return updated

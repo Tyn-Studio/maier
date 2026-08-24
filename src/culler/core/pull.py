@@ -76,12 +76,16 @@ def _process_asset(
             "media_type": asset.media_type,
             "file_size": asset.size,
             "file_mtime": 0.0,
-            # Deliberate choice (flagged): reuse `provenance` for the
-            # account email rather than adding a separate remote-provenance
-            # concept, so the existing provenance filter dropdown (grid,
-            # queries.distinct_provenances) works for iCloud accounts with
-            # no further UI changes.
-            "provenance": client.account,
+            # Deliberate choice (flagged, PLAN T17): `provenance` is the
+            # account SLUG, not the raw email. T16 originally used the raw
+            # email here; T17 changed it so a downloaded original's local
+            # row (whose provenance/directory MUST be the filesystem-safe
+            # slug per SPEC §18 "selected/{account}/...") keeps the same
+            # provenance value before and after conversion -- filtering by
+            # provenance stays consistent across that transition instead of
+            # silently changing when a photo is selected.
+            "provenance": remote_state.account_slug(client.account),
+            "remote_filename": asset.filename,
             "status": status,
         },
     )

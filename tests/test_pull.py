@@ -96,7 +96,11 @@ def test_pull_creates_photo_rows_with_correct_fields(tmp_path):
     assert p1.media_type == Photo.MEDIA_IMAGE
     assert p1.file_size == 1000
     assert p1.file_mtime == 0.0
-    assert p1.provenance == "luis@example.com"
+    # PLAN T17 change (flagged): provenance is the filesystem-safe SLUG, not
+    # the raw email -- keeps provenance stable across the select-download
+    # conversion, whose destination directory must be the slug (SPEC §18).
+    assert p1.provenance == remote_state.account_slug("luis@example.com")
+    assert p1.remote_filename == "r1.jpg"
     assert p1.status == Photo.STATUS_OPTIONAL
 
     p2 = Photo.objects.get(account="luis@example.com", remote_id="r2")

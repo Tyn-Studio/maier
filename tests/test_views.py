@@ -5,6 +5,8 @@ import pytest
 from django.conf import settings
 from django.urls import reverse
 
+from culler.core import downloads as downloads_module
+from culler.core import remote_state
 from culler.core import scan as scan_module
 from culler.core import views as views_module
 from culler.core.models import DuplicatePair, Photo
@@ -13,6 +15,27 @@ from culler.core.scan import ScanProgress, scan
 from fixtures import build_fixture_folder
 
 _CAPTURED = datetime(2025, 6, 14, 18, 30, 12, tzinfo=UTC)
+
+
+def _remote_db_photo(remote_id: str, account: str = "luis@example.com", **overrides) -> Photo:
+    kwargs = dict(
+        status=Photo.STATUS_OPTIONAL,
+        provenance=remote_state.account_slug(account),
+        file_size=1000,
+        file_mtime=0.0,
+        captured_at=_CAPTURED,
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+        remote_filename=f"{remote_id}.jpg",
+    )
+    kwargs.update(overrides)
+    return Photo.objects.create(
+        source=Photo.SOURCE_ICLOUD,
+        account=account,
+        remote_id=remote_id,
+        relative_path=f"@icloud/{account}/{remote_id}",
+        **kwargs,
+    )
 
 
 def _touch(rel_path: str, content: bytes = b"data"):
@@ -218,6 +241,131 @@ def test_set_status_vanished_file_returns_409(client):
     response = client.post(reverse("set-status", args=[photo.pk]), {"status": "selected"})
 
     assert response.status_code == 409
+
+
+# --- remote (iCloud) set-status paths (T17) --------------------------------
+
+
+@pytest.mark.django_db
+def test_set_status_remote_reject_writes_state_no_disk_io(client):
+    unique = "t_t17_remote_reject"
+    slug = remote_state.account_slug("luis@example.com")
+    photo = _remote_db_photo(f"r_{unique}", provenance=slug)
+
+    response = client.post(
+        reverse("set-status", args=[photo.pk]),
+        {"status": "rejected", "context": "grid"},
+    )
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert f"cell-{photo.pk}" in body
+    assert "status-rejected" in body
+
+    assert not (settings.WORKING_FOLDER / "selected" / slug / f"r_{unique}.jpg").exists()
+    assert not (settings.WORKING_FOLDER / "rejected" / slug / f"r_{unique}.jpg").exists()
+
+    photo.refresh_from_db()
+    assert photo.status == "rejected"
+    assert photo.source == Photo.SOURCE_ICLOUD
+
+    state = remote_state.load_state(settings.WORKING_FOLDER, "luis@example.com")
+    assert state.decisions == {f"r_{unique}": "rejected"}
+
+
+@pytest.mark.django_db
+def test_set_status_remote_undecide_review_context_hx_redirect(client):
+    unique = "t_t17_remote_undecide"
+    slug = remote_state.account_slug("luis@example.com")
+    photo = _remote_db_photo(f"r_{unique}", provenance=slug)
+    remote_state.save_state(
+        settings.WORKING_FOLDER,
+        remote_state.AccountState(
+            account="luis@example.com", decisions={f"r_{unique}": "rejected"}
+        ),
+    )
+
+    response = client.post(
+        reverse("set-status", args=[photo.pk]),
+        {"status": "optional", "context": "review", "qs": f"provenance={slug}"},
+    )
+
+    assert response.status_code == 200
+    assert response["HX-Redirect"] == f"{reverse('grid')}?provenance={slug}"
+
+    photo.refresh_from_db()
+    assert photo.status == "optional"
+
+    state = remote_state.load_state(settings.WORKING_FOLDER, "luis@example.com")
+    assert state.decisions == {}
+
+
+@pytest.mark.django_db
+def test_set_status_remote_select_flips_status_and_enqueues_download(client, monkeypatch):
+    unique = "t_t17_remote_select"
+    slug = remote_state.account_slug("luis@example.com")
+    photo = _remote_db_photo(f"r_{unique}", provenance=slug)
+
+    calls = []
+    monkeypatch.setattr(downloads_module, "enqueue_original", lambda folder, p: calls.append(p.pk))
+
+    response = client.post(
+        reverse("set-status", args=[photo.pk]),
+        {"status": "selected", "context": "grid"},
+    )
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "status-selected" in body
+
+    photo.refresh_from_db()
+    assert photo.status == "selected"
+    # The download itself is async -- the row hasn't converted on this request.
+    assert photo.source == Photo.SOURCE_ICLOUD
+    assert calls == [photo.pk]
+    assert not (settings.WORKING_FOLDER / "selected" / slug / f"r_{unique}.jpg").exists()
+
+
+@pytest.mark.django_db
+def test_set_status_remote_invalid_status_returns_400(client):
+    unique = "t_t17_remote_invalid"
+    photo = _remote_db_photo(f"r_{unique}")
+
+    response = client.post(reverse("set-status", args=[photo.pk]), {"status": "bogus"})
+
+    assert response.status_code == 400
+
+
+@pytest.mark.django_db
+def test_grid_annotates_download_pending_for_selected_remote_photo(client):
+    unique = "t_t17_grid_pending"
+    slug = remote_state.account_slug("luis@example.com")
+    pending = _remote_db_photo(f"r_{unique}_pending", provenance=slug, status=Photo.STATUS_SELECTED)
+    not_pending = _remote_db_photo(
+        f"r_{unique}_optional",
+        provenance=slug,
+        status=Photo.STATUS_OPTIONAL,
+        captured_at=_CAPTURED.replace(hour=19),
+    )
+
+    response = client.get(reverse("grid"), {"provenance": slug})
+
+    groups = response.context["day_groups"]
+    by_pk = {p.pk: p for g in groups for p in g["photos"]}
+    assert by_pk[pending.pk].download_pending is True
+    assert by_pk[not_pending.pk].download_pending is False
+
+
+@pytest.mark.django_db
+def test_review_annotates_download_pending_for_selected_remote_photo(client):
+    unique = "t_t17_review_pending"
+    slug = remote_state.account_slug("luis@example.com")
+    photo = _remote_db_photo(f"r_{unique}", provenance=slug, status=Photo.STATUS_SELECTED)
+
+    response = client.get(reverse("review", args=[photo.pk]))
+
+    assert response.status_code == 200
+    assert response.context["photo"].download_pending is True
 
 
 # --- exact-dupe grouping (T7): grid hiding, badge, group cull -------------

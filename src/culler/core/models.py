@@ -65,6 +65,10 @@ class Photo(models.Model):
     # Apple-ID email for source="icloud" rows; "" for local rows.
     account = models.CharField(max_length=255, blank=True, default="")
     remote_id = models.CharField(max_length=255, null=True, blank=True)
+    # Original filename reported by the API (e.g. "IMG_0001.HEIC"); used as
+    # the download destination's filename (T17 core/downloads.py). "" until
+    # a pull populates it; falls back to f"{remote_id}.jpg" if still empty.
+    remote_filename = models.CharField(max_length=255, blank=True, default="")
 
     class Meta:
         ordering = ["captured_at"]
