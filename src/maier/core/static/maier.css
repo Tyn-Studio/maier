@@ -152,12 +152,13 @@ main {
 
 .grid-cells {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(var(--cell, 180px), 1fr));
   gap: 0.5rem;
 }
 
 .cell {
   position: relative;
+  aspect-ratio: 1;
   border: 2px solid transparent;
   border-radius: 6px;
   overflow: hidden;
@@ -168,7 +169,7 @@ main {
 .cell img {
   display: block;
   width: 100%;
-  aspect-ratio: 1 / 1;
+  height: 100%;
   object-fit: cover;
 }
 
@@ -275,9 +276,9 @@ main {
    from the API ("exif" source per pull.py), so the low-confidence-date
    glyph never actually renders on a source="icloud" cell -- no real
    conflict. badge-pending stacks directly above badge-cloud since a
-   selected-but-undownloaded remote photo shows both at once. Also used as-is
-   inside .review-image-wrap (review.html): nothing else occupies that
-   corner there (the live-photo toggle badge is top-left). */
+   selected-but-undownloaded remote photo shows both at once. On the review
+   screen (T23 redesign) these badges live in the slim top bar instead --
+   `.review-topbar .badge` resets the absolute positioning below. */
 
 .badge-cloud {
   top: auto;
@@ -342,43 +343,69 @@ main {
   height: 1px;
 }
 
-/* --- review screen ------------------------------------------------------ */
+/* --- review screen (PLAN T23 items 1+2+3: full-viewport, filmstrip pinned
+   bottom, metadata collapsed into a floating panel) ------------------------ */
+
+body[data-page="review"] main {
+  padding: 0;
+  height: 100vh;
+  overflow: hidden;
+}
 
 .review-layout {
   display: flex;
-  gap: 1.5rem;
-  align-items: flex-start;
+  flex-direction: column;
+  height: 100%;
 }
 
-.review-main {
-  flex: 1;
-  min-width: 0;
+.review-topbar {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 1rem;
+  background: var(--bg-raised);
+  border-bottom: 1px solid var(--border);
 }
 
 .back-link {
   display: inline-block;
-  margin-bottom: 0.75rem;
 }
 
-.review-image-wrap {
-  position: relative;
+.review-position-group {
   display: flex;
-  justify-content: center;
-  background: #000;
-  border-radius: 8px;
-  overflow: hidden;
+  align-items: center;
+  gap: 0.5rem;
+  color: var(--muted);
 }
 
-.review-image {
-  max-width: 100%;
-  max-height: 75vh;
-  display: block;
+.review-nav-link {
+  color: var(--accent);
+  text-decoration: none;
+  padding: 0.1rem 0.4rem;
 }
 
-.review-image-wrap #live-badge {
-  position: absolute;
-  top: 0.75rem;
-  left: 0.75rem;
+.review-nav-link.disabled {
+  color: var(--border);
+}
+
+.review-position {
+  font-size: 0.85rem;
+}
+
+.review-topbar .badge {
+  /* Reset the absolute-positioning used when these badges sit on top of a
+     grid cell / the image area -- in the top bar they're plain inline
+     items among the other controls. */
+  position: static;
+  top: auto;
+  right: auto;
+  left: auto;
+  bottom: auto;
+}
+
+.review-topbar #live-badge {
   border: none;
   cursor: pointer;
 }
@@ -390,15 +417,14 @@ main {
 .review-actions {
   display: flex;
   gap: 0.5rem;
-  margin-top: 0.75rem;
 }
 
 .review-actions button {
-  background: var(--bg-raised);
+  background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 0.4rem 0.8rem;
+  padding: 0.35rem 0.7rem;
   cursor: pointer;
 }
 
@@ -407,26 +433,102 @@ main {
   font-size: 0.9rem;
 }
 
-.review-nav {
+.metadata-toggle-btn {
+  margin-left: auto;
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  width: 1.6rem;
+  height: 1.6rem;
+  cursor: pointer;
+  font-style: italic;
+  font-weight: 600;
+}
+
+.review-image-area {
+  flex: 1;
+  min-height: 0;
+  position: relative;
   display: flex;
+  justify-content: center;
   align-items: center;
-  gap: 1rem;
-  margin-top: 0.75rem;
+  background: #000;
+  overflow: hidden;
+}
+
+.review-image {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  display: block;
+}
+
+.review-missing-note-overlay {
+  position: absolute;
+  bottom: 1rem;
+  left: 50%;
+  transform: translateX(-50%);
+  background: rgba(0, 0, 0, 0.7);
+  padding: 0.4rem 0.8rem;
+  border-radius: 4px;
+  margin: 0;
+}
+
+.metadata-panel {
+  position: absolute;
+  top: 0.75rem;
+  right: 0.75rem;
+  max-width: 320px;
+  background: rgba(0, 0, 0, 0.75);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 0.75rem 1rem;
+  font-size: 0.85rem;
+  backdrop-filter: blur(2px);
+}
+
+.metadata-panel dl {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 0.3rem 0.75rem;
+  margin: 0;
+}
+
+.metadata-panel dt {
   color: var(--muted);
+  font-size: 0.75rem;
+}
+
+.metadata-panel dd {
+  margin: 0;
+  word-break: break-word;
+}
+
+.metadata-panel .path-truncated {
+  display: block;
+  max-width: 220px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .filmstrip {
+  flex: 0 0 84px;
+  height: 84px;
   display: flex;
+  align-items: center;
   gap: 0.35rem;
   overflow-x: auto;
-  margin-top: 1rem;
-  padding-bottom: 0.5rem;
+  padding: 0 0.75rem;
+  background: var(--bg-raised);
+  border-top: 1px solid var(--border);
 }
 
 .filmstrip-item {
   flex: 0 0 auto;
-  width: 90px;
-  height: 90px;
+  width: 64px;
+  height: 64px;
   border: 2px solid transparent;
   border-radius: 4px;
   overflow: hidden;
@@ -440,31 +542,6 @@ main {
 
 .filmstrip-item.current {
   border-color: var(--accent);
-}
-
-.review-sidebar {
-  flex: 0 0 260px;
-  background: var(--bg-raised);
-  border: 1px solid var(--border);
-  border-radius: 8px;
-  padding: 1rem;
-}
-
-.review-sidebar dl {
-  display: grid;
-  grid-template-columns: auto 1fr;
-  gap: 0.35rem 0.75rem;
-  margin: 0;
-}
-
-.review-sidebar dt {
-  color: var(--muted);
-  font-size: 0.8rem;
-}
-
-.review-sidebar dd {
-  margin: 0;
-  word-break: break-word;
 }
 
 .warn {

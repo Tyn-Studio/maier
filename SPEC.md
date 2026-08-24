@@ -32,7 +32,8 @@ Distributed as a normal desktop app: technical users install with one command; n
 
 Rules:
 
-- **Moves mirror the source substructure**: selecting `apple-luis/IMG_001.jpg` moves it to `selected/apple-luis/IMG_001.jpg`. No filename collisions between sources; provenance survives the move; unflagging strips the status prefix and restores the original location.
+- **`selected/` is FLAT** (decided 2026-08-24, T24): selecting `apple-luis/IMG_001.jpg` moves it to `selected/IMG_001.jpg` — the deliverable folder holds all exports directly, no subfolders. Cross-source filename clashes get numeric suffixes. The pre-select path is recorded in the DB (`Photo.original_path`) so unflagging restores the original location; after a cache wipe the accepted degradation is restoring to `{provenance}/{filename}` (or the root). Any subfolder content found under `selected/` is lifted to the top level at the start of every scan (`flatten_selected` — converging invariant, origins recorded).
+- **`rejected/` mirrors the source substructure** (unchanged): rejecting `apple-luis/IMG_001.jpg` — directly or out of `selected/` — lands it at `rejected/apple-luis/IMG_001.jpg`; unflag-from-rejected strips the prefix, derivable from location alone.
 - Moves are `os.rename` on the same volume — atomic and instant. If a destination path unexpectedly exists (e.g. user manually placed a different file there), the move appends a numeric suffix rather than overwriting; overwriting never happens.
 - **Live Photos**: the paired `.mov` moves together with its image, always.
 - **The filesystem is the source of truth.** The DB caches status for query speed but is reconciled on every scan; files moved externally (Finder) are simply picked up — culling outside the app is supported behavior, not corruption.
@@ -134,8 +135,9 @@ Recent folders (name, counts by status, last opened) + "Open folder" (native pic
 
 ### Review (single photo)
 - Large preview — the hot loop; < 100 ms perceived (local previews, far-future cache headers keyed by content).
-- Filmstrip of ±10 neighbours; auto-advance to the next photo in the current filter after each status action.
-- Collapsible metadata sidebar: capture date + trust flag, provenance, dimensions, size, current path, dupe-group info.
+- Layout (revised 2026-08-24, T23): the image fills all available space; a slim top bar carries back link, prev/next + position, status pill, P/X/U actions, and badges; the ±10-neighbour filmstrip is always pinned at the bottom. **No auto-advance**: a status action updates the status pill in place and stays on the photo — navigation is keyboard-only (arrows).
+- Metadata is minimal and hidden by default: `I` toggles a small floating overlay (capture date + trust flag, provenance, size, truncated path, status, dupe count).
+- Grid thumbnail size is user-adjustable (slider in the filter bar, persisted in the browser).
 - Videos: `<video controls>` streaming the original via a Django range-request view. Live Photos: badge toggles the paired video.
 
 ### Duplicates review — per §8.
@@ -220,7 +222,7 @@ Default mode: pywebview (WKWebView / WebView2 / WebKitGTK) with native folder pi
 2. **M2 — Full indexing**: Phase B background queue (hashes, exact-dupe groups + auto-reject policy, pHash + near-dupe screen), Live Photos, RAW previews, videos, move reconciliation, missing-file handling, provenance filter.
 3. **M3 — Desktop feel**: pywebview window + native pickers as default, recent-folders home, exiftool auto-download, polish (day headers, badges, shortcut overlay, dark theme, indexing banner, summary screen).
 4. **M4 — Distribution**: PyPI publish, PyInstaller specs, GitHub Actions release pipeline, smoke tests, README install docs for all three tiers.
-5. **M5 — iCloud sources (§18)**: multi-account attach with 2FA, incremental thumbnail-first pulls, select-downloads-original culling, accounts screen. *Success: attach two real accounts, pull, cull remote photos alongside local ones, verify only selected originals land in `selected/{account}/` and nothing changes in either iCloud account.*
+5. **M5 — iCloud sources (§18)**: multi-account attach with 2FA, incremental thumbnail-first pulls, select-downloads-original culling, accounts screen. *Success: attach two real accounts, pull, cull remote photos alongside local ones, verify only selected originals land in `selected/` and nothing changes in either iCloud account.*
 
 ## 17. Open questions
 
@@ -238,9 +240,9 @@ Multiple Apple accounts can be attached as **read-only import sources**. Their p
 ### Hard rules
 
 1. **Never modify anything in an iCloud account.** No deletes, no album changes, no writes of any kind — the web API is used exclusively to read metadata and download image data. (Extends §4's non-goals: rejecting a photo locally never touches iCloud.)
-2. **Originals are downloaded only on selection.** Culling browses thumbnails/medium previews; `P` (select) enqueues download of the original into `selected/{account}/…`. Rejected and undecided remote photos never materialize as local files.
+2. **Originals are downloaded only on selection.** Culling browses thumbnails/medium previews; `P` (select) enqueues download of the original into flat `selected/` (T24). Rejected and undecided remote photos never materialize as local files.
 3. Once an original is downloaded it becomes a normal local file: further status changes are ordinary file moves (unflag moves it to `{account}/…` in the root — it is never deleted).
-4. **HEIC & Live Photos** (decided 2026-08-24, T20). Deliberate exception to "what lands is the original": an iCloud HEIC/HEIF original has no full-resolution JPEG rendition on the API (medium tops out around 1536px), so selecting one downloads the HEIC, converts it locally to a full-resolution JPEG (or PNG if the image has an alpha channel) with EXIF preserved, and lands *that* in `selected/{account}/…` — a HEIC would not be directly usable by the CTO's downstream tools. Conversion failure falls back to saving the HEIC original as-is (with a visible error) rather than losing the selection. Live Photo selects additionally fetch the paired video component alongside the still. This conversion applies **only** to iCloud downloads, where the file materializing on disk is produced by code this app controls — local files (manual exports) are never converted, moved-not-modified per §4/hard rule 2 always applies to them.
+4. **HEIC & Live Photos** (decided 2026-08-24, T20). Deliberate exception to "what lands is the original": an iCloud HEIC/HEIF original has no full-resolution JPEG rendition on the API (medium tops out around 1536px), so selecting one downloads the HEIC, converts it locally to a full-resolution JPEG (or PNG if the image has an alpha channel) with EXIF preserved, and lands *that* in flat `selected/` — a HEIC would not be directly usable by the CTO's downstream tools. Conversion failure falls back to saving the HEIC original as-is (with a visible error) rather than losing the selection. Live Photo selects additionally fetch the paired video component alongside the still. This conversion applies **only** to iCloud downloads, where the file materializing on disk is produced by code this app controls — local files (manual exports) are never converted, moved-not-modified per §4/hard rule 2 always applies to them.
 
 ### Access path
 
@@ -249,7 +251,7 @@ Multiple Apple accounts can be attached as **read-only import sources**. Their p
 
 ### State model
 
-- Remote items get DB rows (`Photo.source = "icloud"`, `account`, `remote_id`, remote capture date/dimensions from API metadata) but **the DB stays a cache**: durable remote state lives in per-account JSON files in the working folder at `{folder}/icloud-state/{account}.json` — portable with the folder, survives `.maier/` deletion. Each records: the incremental sync cursor (last pull watermark), and the per-remote-id decision map (`rejected` / `undecided`; `selected` is derivable from the downloaded file in `selected/{account}/` and is recorded only as a download-completed marker).
+- Remote items get DB rows (`Photo.source = "icloud"`, `account`, `remote_id`, remote capture date/dimensions from API metadata) but **the DB stays a cache**: durable remote state lives in per-account JSON files in the working folder at `{folder}/icloud-state/{account}.json` — portable with the folder, survives `.maier/` deletion. Each records: the incremental sync cursor (last pull watermark), and the per-remote-id decision map (`rejected` / `undecided`; `selected` is derivable from the downloaded file in `selected/` and is recorded only as a download-completed marker).
 - **Pulls are incremental**: first pull optionally bounded by a date range; subsequent pulls fetch only items newer than the cursor. Re-pulls are idempotent (keyed by `remote_id`).
 - Thumbnails/medium previews cache under `.maier/previews/` keyed by `remote_id` (cache role, regenerable by re-fetch).
 - Cross-account exact duplicates: remote items join §8 grouping once their selected original is downloaded and hashed; pre-download, near-identical remote items are surfaced via capture-time + filename + size heuristics (best effort).

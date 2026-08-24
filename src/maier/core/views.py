@@ -147,6 +147,7 @@ def review(request, pk):
         "index": idx,
         "total": len(ordered_pks),
         "dupe_count": dupe_count,
+        "filesize_display": queries.human_size(photo.file_size),
     }
     return render(request, "review.html", context)
 
@@ -172,13 +173,12 @@ def set_status(request, pk):
         return HttpResponse(f"iCloud session expired for {exc.account}", status=409)
 
     if context_mode == "review":
-        next_id = request.POST.get("next")
-        url = reverse("review", args=[next_id]) if next_id else reverse("grid")
-        if qs:
-            url = f"{url}?{qs}"
-        response = HttpResponse(status=200)
-        response["HX-Redirect"] = url
-        return response
+        # PLAN T23 item 3: no auto-advance in review. The user stays on the
+        # photo (it may have physically moved on disk, or be download-
+        # pending for a remote select) -- only the status pill in the top
+        # bar updates; arrows are the only navigation. The partial needs
+        # nothing but the photo object.
+        return render(request, "_review_status.html", {"photo": photo})
 
     photo.dupe_count = phaseb.duplicate_counts().get(photo.sha256, 0) if photo.sha256 else 0
     photo.is_live = bool(photo.live_photo_video_path)

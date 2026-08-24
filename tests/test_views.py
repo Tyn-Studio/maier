@@ -184,38 +184,36 @@ def test_set_status_grid_context_moves_file_and_returns_cell_partial(client):
     assert f"cell-{photo.pk}" in body
     assert "status-selected" in body
 
-    assert (settings.WORKING_FOLDER / "selected/t_set_status_grid/img.jpg").exists()
+    # T24 CTO decision: selected/ is flat -- no mirrored provenance subpath.
+    assert (settings.WORKING_FOLDER / "selected/img.jpg").exists()
     assert not (settings.WORKING_FOLDER / "t_set_status_grid/img.jpg").exists()
 
     photo.refresh_from_db()
     assert photo.status == "selected"
-    assert photo.relative_path == "selected/t_set_status_grid/img.jpg"
+    assert photo.relative_path == "selected/img.jpg"
 
 
 @pytest.mark.django_db
-def test_set_status_review_context_returns_hx_redirect(client):
+def test_set_status_review_context_returns_status_pill_no_redirect(client):
+    # PLAN T23 item 3: review no longer auto-advances -- the user stays on
+    # the photo and only the status pill (#review-status) updates in place.
     _touch("t_set_status_review/img.jpg")
     photo = _db_photo("t_set_status_review/img.jpg", provenance="t_set_status_review")
-    next_photo = _db_photo(
-        "t_set_status_review/next.jpg",
-        provenance="t_set_status_review",
-        captured_at=datetime(2025, 6, 15, tzinfo=UTC),
-    )
-    _touch("t_set_status_review/next.jpg")
 
     response = client.post(
         reverse("set-status", args=[photo.pk]),
         {
             "status": "rejected",
             "context": "review",
-            "next": str(next_photo.pk),
             "qs": "provenance=t_set_status_review",
         },
     )
 
     assert response.status_code == 200
-    expected = reverse("review", args=[next_photo.pk]) + "?provenance=t_set_status_review"
-    assert response["HX-Redirect"] == expected
+    assert "HX-Redirect" not in response
+    body = response.content.decode()
+    assert 'id="review-status"' in body
+    assert "Rejected" in body
 
     photo.refresh_from_db()
     assert photo.status == "rejected"
@@ -277,7 +275,10 @@ def test_set_status_remote_reject_writes_state_no_disk_io(client):
 
 
 @pytest.mark.django_db
-def test_set_status_remote_undecide_review_context_hx_redirect(client):
+def test_set_status_remote_undecide_review_context_returns_status_pill(client):
+    # PLAN T23 item 3: same no-redirect behaviour applies to remote rows --
+    # the durable state write still happens, but the response is the pill
+    # partial rather than an HX-Redirect.
     unique = "t_t17_remote_undecide"
     slug = remote_state.account_slug("luis@example.com")
     photo = _remote_db_photo(f"r_{unique}", provenance=slug)
@@ -294,7 +295,10 @@ def test_set_status_remote_undecide_review_context_hx_redirect(client):
     )
 
     assert response.status_code == 200
-    assert response["HX-Redirect"] == f"{reverse('grid')}?provenance={slug}"
+    assert "HX-Redirect" not in response
+    body = response.content.decode()
+    assert 'id="review-status"' in body
+    assert "Optional" in body
 
     photo.refresh_from_db()
     assert photo.status == "optional"
@@ -422,7 +426,9 @@ def test_set_status_select_representative_auto_rejects_dupe_copy(client):
     )
     assert response.status_code == 200
 
-    assert (settings.WORKING_FOLDER / f"selected/{unique}/rep.jpg").exists()
+    # T24 CTO decision: selected/ is flat; rejected/ (the redundant copy)
+    # is untouched, still mirrored.
+    assert (settings.WORKING_FOLDER / "selected/rep.jpg").exists()
     other.refresh_from_db()
     assert other.status == Photo.STATUS_REJECTED
     assert (settings.WORKING_FOLDER / f"rejected/{unique}/other.jpg").exists()
@@ -504,7 +510,8 @@ def test_resolve_pair_keep_left_moves_files_and_resolves(client):
     pair.refresh_from_db()
     assert pair.resolved is True
 
-    assert (settings.WORKING_FOLDER / f"selected/{unique}/left.jpg").exists()
+    # T24 CTO decision: selected/ is flat; rejected/ is untouched, mirrored.
+    assert (settings.WORKING_FOLDER / "selected/left.jpg").exists()
     assert (settings.WORKING_FOLDER / f"rejected/{unique}/right.jpg").exists()
     assert not (settings.WORKING_FOLDER / f"{unique}/left.jpg").exists()
     assert not (settings.WORKING_FOLDER / f"{unique}/right.jpg").exists()
@@ -528,7 +535,8 @@ def test_resolve_pair_keep_right_moves_files_mirrored(client):
     assert response.status_code == 200
     pair.refresh_from_db()
     assert pair.resolved is True
-    assert (settings.WORKING_FOLDER / f"selected/{unique}/right.jpg").exists()
+    # T24 CTO decision: selected/ is flat; rejected/ is untouched, mirrored.
+    assert (settings.WORKING_FOLDER / "selected/right.jpg").exists()
     assert (settings.WORKING_FOLDER / f"rejected/{unique}/left.jpg").exists()
 
 
@@ -1149,6 +1157,21 @@ def test_grid_summary_link_present(client):
 
     body = response.content.decode()
     assert reverse("summary") in body
+
+
+# --- grid cell size slider (PLAN T23 item 4) --------------------------------
+# JS behaviour (localStorage persistence, --cell CSS var, htmx-swap survival)
+# is not exercised here -- server rendering is the only testable part.
+
+
+@pytest.mark.django_db
+def test_grid_renders_cell_size_slider(client):
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert '<input type="range" id="cell-size"' in body
+    assert 'min="120"' in body
+    assert 'max="340"' in body
 
 
 # --- dupes zoom (T13 item 4) ------------------------------------------------

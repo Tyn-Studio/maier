@@ -33,6 +33,9 @@
     <input type="checkbox" name="dates" value="low" {% if filter_dates_low %}checked{% endif %}>
     Low-confidence dates
   </label>
+  <label>Size
+    <input type="range" id="cell-size" min="120" max="340" step="20" value="180">
+  </label>
   <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-poller" hx-swap="outerHTML">Rescan</button>
   <a class="summary-link" href="{% url 'summary' %}">Summary</a>
   <a class="accounts-link" href="{% url 'accounts' %}">Accounts</a>
@@ -51,4 +54,38 @@
 <div id="grid-content">
   {% include "_grid_items.html" %}
 </div>
+
+<script>
+(function () {
+  // Grid cell size (PLAN T23 item 4). --cell is set on <body> rather than
+  // #grid-content: the filter bar's hx-swap only replaces #grid-content's
+  // innerHTML (never the element itself), and pagination's sentinel swap
+  // is outerHTML on itself, not on #grid-content -- so #grid-content
+  // always survives every htmx swap on this page and a custom property
+  // set on it would already inherit fine. Body is used anyway as the
+  // simplest, swap-proof anchor (CSS custom properties inherit down the
+  // whole subtree, including anything htmx injects later).
+  var slider = document.getElementById("cell-size");
+  if (!slider) return;
+
+  var STORAGE_KEY = "maier-cell-size";
+  var saved = localStorage.getItem(STORAGE_KEY);
+  if (saved) {
+    document.body.style.setProperty("--cell", saved + "px");
+    slider.value = saved;
+  }
+
+  slider.addEventListener("input", function () {
+    document.body.style.setProperty("--cell", slider.value + "px");
+    localStorage.setItem(STORAGE_KEY, slider.value);
+  });
+  // The filter bar treats any "change" bubbling up from its inputs as a
+  // request to reload the grid (hx-trigger="change" + hx-include). The
+  // size slider isn't a server-side filter, so stop it from triggering
+  // that request.
+  slider.addEventListener("change", function (e) {
+    e.stopPropagation();
+  });
+})();
+</script>
 {% endblock %}

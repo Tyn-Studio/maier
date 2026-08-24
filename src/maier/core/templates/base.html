@@ -24,6 +24,7 @@
         <dt>&larr; / &rarr;</dt><dd>Previous / next</dd>
         <dt>Space</dt><dd>Open review (grid)</dd>
         <dt>L</dt><dd>Play video / Live Photo (review)</dd>
+        <dt>I</dt><dd>Toggle metadata panel (review)</dd>
         <dt>Esc</dt><dd>Back to grid</dd>
         <dt>?</dt><dd>Toggle this overlay</dd>
         <dt>1</dt><dd>Dupes review: keep left</dd>
@@ -85,9 +86,16 @@
       setFocus(0);
     }
 
+    function toggleMetadataPanel() {
+      var panel = document.getElementById("metadata-panel");
+      if (panel) panel.classList.toggle("hidden");
+    }
+
     if (page === "review") {
       var liveBadge = document.getElementById("live-badge");
       if (liveBadge) { liveBadge.addEventListener("click", toggleLivePhoto); }
+      var metadataToggle = document.getElementById("metadata-toggle");
+      if (metadataToggle) { metadataToggle.addEventListener("click", toggleMetadataPanel); }
     }
 
     document.addEventListener("keydown", function (e) {
@@ -103,6 +111,11 @@
       if (e.key === "Escape") {
         if (overlay && !overlay.classList.contains("hidden")) {
           overlay.classList.add("hidden");
+          return;
+        }
+        var metadataPanel = document.getElementById("metadata-panel");
+        if (metadataPanel && !metadataPanel.classList.contains("hidden")) {
+          metadataPanel.classList.add("hidden");
           return;
         }
         if (page === "review") click("#back-to-grid");
@@ -124,6 +137,7 @@
         else if (e.key === "x" || e.key === "X") { click("#action-reject"); }
         else if (e.key === "u" || e.key === "U") { click("#action-undecide"); }
         else if (e.key === "l" || e.key === "L") { toggleLivePhoto(); }
+        else if (e.key === "i" || e.key === "I") { toggleMetadataPanel(); }
       } else if (page === "dupes") {
         if (e.key === "1") { click("#action-keep-left"); }
         else if (e.key === "2") { click("#action-keep-right"); }
