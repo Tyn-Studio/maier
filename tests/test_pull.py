@@ -506,3 +506,87 @@ def test_start_background_pull_different_accounts_run_independently(monkeypatch,
         time.sleep(0.02)
     assert progress_a.finished is True
     assert progress_b.finished is True
+
+
+# --- enumeration/worker contention fix (2026-08-24) --------------------------
+
+
+@pytest.mark.django_db
+def test_backlog_cache_misses_deferred_until_enumeration_caches(tmp_path):
+    """A client exposing `has_asset_cached` gets its cache-miss backlog
+    fetches deferred until after the enumeration (which caches every asset)
+    -- fetching them mid-enumeration walks the album's shared pagination
+    and starves the workers (observed live)."""
+
+    class CacheAwareClient(FakeClient):
+        def __init__(self, account, batches=None):
+            super().__init__(account, batches)
+            self.cached: set[str] = set()
+            self.download_order: list[str] = []
+
+        def has_asset_cached(self, rid):
+            return rid in self.cached
+
+        def list_assets(self, since):
+            for asset in super().list_assets(since):
+                self.cached.add(asset.remote_id)
+                yield asset
+
+        def download(self, remote_id, version, dest):
+            # The fix's contract: no cache-miss downloads while enumeration
+            # could still be running (deferral makes misses impossible here
+            # except the post-enumeration fallback path).
+            self.download_order.append(remote_id)
+            super().download(remote_id, version, dest)
+
+    # r_old is pre-existing backlog (row exists, preview missing) and is NOT
+    # in the client cache at pull start -- must be deferred, then fetched.
+    client = CacheAwareClient("luis@example.com", [[_asset("r_old", T0), _asset("r_new", T1)]])
+    pull_account(tmp_path, client, PullProgress())  # first pull creates rows + previews
+
+    # wipe previews to rebuild a backlog, fresh cache-empty client
+    for f in (tmp_path / ".maier" / "previews").glob("icloud-*"):
+        f.unlink()
+    client2 = CacheAwareClient("luis@example.com", [[_asset("r_old", T0), _asset("r_new", T1)]])
+
+    progress = PullProgress()
+    pull_account(tmp_path, client2, progress)
+
+    assert progress.errors == []
+    assert progress.total == progress.done == 2  # both previews refetched
+    assert sorted(client2.download_order) == ["r_new", "r_old"]
+    # every download happened only after its asset was cached
+    assert all(rid in client2.cached for rid in client2.download_order)
+
+
+@pytest.mark.django_db
+def test_resume_pulls_starts_pull_for_live_sessions_only(tmp_path, monkeypatch):
+    from maier.core import pull as pull_mod
+    from maier.core import remote_state as rs
+
+    rs.save_state(tmp_path, rs.AccountState(account="live@example.com"))
+    rs.save_state(tmp_path, rs.AccountState(account="dead@example.com"))
+
+    started: list[str] = []
+
+    class _FakeClientObj:
+        def __init__(self, account):
+            self.account = account
+
+    def _from_session(account):
+        return _FakeClientObj(account) if account == "live@example.com" else None
+
+    import maier.core.icloud as icloud_mod
+
+    monkeypatch.setattr(icloud_mod.ICloudClient, "from_session", staticmethod(_from_session))
+    monkeypatch.setattr(
+        pull_mod, "start_background_pull", lambda folder, c: started.append(c.account)
+    )
+
+    pull_mod.resume_pulls(tmp_path)
+
+    deadline = time.time() + 5
+    while len(started) < 1 and time.time() < deadline:
+        time.sleep(0.02)
+    time.sleep(0.1)  # let a wrong dead-account start surface too
+    assert started == ["live@example.com"]

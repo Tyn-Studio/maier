@@ -279,6 +279,17 @@ class ICloudClient:
         except _PYICLOUD_ERRORS as exc:
             raise ICloudError(f"Listing iCloud assets failed: {exc}") from exc
 
+    def has_asset_cached(self, remote_id: str) -> bool:
+        """True when `download(remote_id, ...)` can run without an album
+        lookup. `photos.all.get(id)` walks the album's shared pagination --
+        calling it from preview workers WHILE `list_assets` is enumerating
+        the same album starves the workers behind the enumerator (observed
+        live: "previews 0 / 2788" for minutes, 2026-08-24). Callers doing
+        bulk fetches during an active enumeration should defer cache-miss
+        items until the enumeration has cached them (pull.py does).
+        """
+        return remote_id in self._asset_cache
+
     def _find_asset(self, remote_id: str) -> object:
         cached = self._asset_cache.get(remote_id)
         if cached is not None:

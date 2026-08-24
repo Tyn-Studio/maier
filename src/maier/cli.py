@@ -117,6 +117,16 @@ def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
     except Exception:
         pass
 
+    try:
+        # Resume iCloud preview sync for every account with a live session --
+        # restarts previously left the backlog dead until a manual "Pull
+        # now" (CTO pain point, 2026-08-24). Never blocks boot.
+        from maier.core.pull import resume_pulls
+
+        resume_pulls(folder)
+    except Exception:
+        pass
+
     port = _pick_port(port)
     url = f"http://127.0.0.1:{port}/"
     print(f"Maier serving {folder} at {url}")

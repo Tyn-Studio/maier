@@ -144,7 +144,18 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
 
         counters_lock = threading.Lock()
 
-        def _fetch_preview(rid: str, media_type: str) -> None:
+        # Backlog items whose asset the client hasn't cached yet are DEFERRED
+        # until the enumeration below has cached them: a cache-miss download
+        # walks the album via `photos.all.get(id)`, which contends with the
+        # active enumeration over the album's shared pagination and starves
+        # every worker (observed live: "previews 0 / 2788" for minutes,
+        # 2026-08-24). Duck-typed via `has_asset_cached` -- fakes without it
+        # never defer.
+        has_cached = getattr(client, "has_asset_cached", None)
+        deferred: list[tuple[str, str]] = []
+        deferred_lock = threading.Lock()
+
+        def _fetch_preview(rid: str, media_type: str, allow_defer: bool = True) -> None:
             # The bulk sync fetches the small "thumb" tier (~60KB, plenty for
             # grid cells): at 41k real-library scale the ~700KB "medium" tier
             # meant ~28GB and hours of downloading before the grid was fully
@@ -157,6 +168,10 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
             try:
                 dest = previews_module.remote_preview_dest(folder, client.account, rid)
                 if not dest.exists():
+                    if allow_defer and has_cached is not None and not has_cached(rid):
+                        with deferred_lock:
+                            deferred.append((rid, media_type))
+                        return  # done is counted when the deferred fetch runs
                     client.download(rid, version, dest)
             except Exception as exc:
                 err = f"{rid}: preview fetch failed: {exc}"
@@ -236,6 +251,17 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
             except Exception as exc:
                 progress.errors.append(f"list_assets: {exc}")
                 iteration_failed = True
+
+            # Enumeration is over (successfully or not): every asset it saw
+            # is in the client's cache, so the deferred backlog can now fetch
+            # without album lookups. Items STILL uncached (deleted remotely,
+            # or the enumeration died early) fall through to the slow-lookup
+            # path -- allow_defer=False so they can't loop back here.
+            with deferred_lock:
+                to_fetch = list(deferred)
+                deferred.clear()
+            for rid, media_type in to_fetch:
+                pool.submit(_fetch_preview, rid, media_type, False)
         # Pool context exit drains all queued preview fetches.
 
         # The cursor is an informational last-pull watermark (max capture
@@ -275,3 +301,31 @@ def start_background_pull(folder: Path, client: ICloudClient) -> PullProgress:
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
     return progress
+
+
+def resume_pulls(folder: Path) -> None:
+    """Boot-time resume (CTO pain point, 2026-08-24: every restart left the
+    preview backlog dead until a manual "Pull now"): for every attached
+    account whose stored session is still valid, start a background pull.
+    Pulls are incremental + the preview backlog self-heals, so this is
+    always safe to fire. Session validation itself hits the network, so the
+    whole sweep runs on a daemon thread -- boot never blocks on it.
+    """
+    folder = Path(folder)
+
+    def _run() -> None:
+        try:
+            from . import remote_state
+            from .icloud import ICloudClient
+
+            for account in remote_state.list_accounts(folder):
+                try:
+                    client = ICloudClient.from_session(account)
+                except Exception:
+                    continue
+                if client is not None:
+                    start_background_pull(folder, client)
+        finally:
+            connection.close()
+
+    threading.Thread(target=_run, daemon=True).start()
