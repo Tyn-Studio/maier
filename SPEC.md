@@ -261,3 +261,36 @@ Multiple Apple accounts can be attached as **read-only import sources**. Their p
 - **Accounts screen**: list attached accounts (email, session status, last pull, item counts), add account (email + password + 2FA code prompt), re-auth when a session expires, "Pull now" with progress (mirrors the indexing banner pattern).
 - Remote photos show a cloud badge in grid/review; selection shows download progress until the original lands.
 
+
+## 19. Library model (v3, decided 2026-08-24 — M6; supersedes the single-working-folder model of §1–§3 and §11 when it ships)
+
+The app decouples from a single working folder and becomes a **library**: the user launches it bare, adds any number of **sources**, and culls one merged capture-date timeline into a single **export folder**.
+
+### Identity & first run
+
+- **First run**: the user must choose the **export folder** — the one folder the app writes deliverables into. It is also the library's home: the DB and preview cache live in `{export}/.maier/` (the library travels with the deliverable; no hidden global state beyond sessions/recents).
+- Subsequent launches open the library directly; `maier open PATH` remains as "launch + add PATH as a source".
+
+### Sources (all read-only)
+
+- **Local folders** — added via native picker ("Add folder"); indexed in place. The app NEVER moves, modifies, or deletes anything inside a source folder. Per-source durable decisions live in a sidecar `{source}/maier-state.json` (statuses survive cache loss and travel with the folder — same pattern as §18's icloud-state).
+- **iCloud accounts** — unchanged from §18; already fit this model exactly (read-only, status-first, download-on-select).
+- **Provenance** = the source's display name (folder basename or account email/slug). Photos at the top level of a source carry the source's own name — provenance is never blank.
+- **Adoption**: adding a folder containing legacy `selected/`/`rejected/` trees imports those as statuses (selected items are additionally copied to the export folder); the legacy layout is left in place, untouched.
+
+### Culling semantics (replaces move-based culling for sources)
+
+- **Select (`P`)** → COPY the original into the flat export folder (collision-suffixed; optional date-prefix naming per §T25 settings). iCloud: download lands there directly. Source file untouched.
+- **Reject (`X`) / Undecide (`U`)** → recorded decision only (DB + sidecar). No file I/O anywhere.
+- **Un-select** → removes the photo's copy FROM THE EXPORT FOLDER only. This is the single deletion the app may ever perform, fenced hard: only files the app itself copied there (tracked by size/hash recorded at copy time); a copy the user has since modified is left in place with a visible warning. Originals in sources are never candidates.
+- Invariant: the export folder always equals the current selection (plus any user-modified strays flagged in the UI).
+
+### State & truth
+
+- Statuses live in the DB, mirrored to per-source sidecars on every change (short atomic writes). The export folder's contents are derivable (re-copyable) from sources + statuses; sidecars make statuses survive `.maier/` loss. "Filesystem is the source of truth" narrows to: source files are inviolable ground truth for *content*; sidecars are ground truth for *decisions*; everything in `.maier/` stays disposable.
+- Dupes (§8), pHash, Live Photo pairing, previews, missing-file handling all port with per-source scoping; exact-dupe groups can span sources.
+
+### Retired by this section (once M6 ships)
+
+- The `selected/`/`rejected/` status folders and all move-based culling (§3, T24 flat-selected included).
+- `MAIER_FOLDER`-bound single-folder boot as the primary mode.
