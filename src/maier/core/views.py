@@ -9,7 +9,17 @@ from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotAllo
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
 
-from . import culling, downloads, phaseb, previews, pull, queries, remote_state, streaming
+from . import (
+    culling,
+    disconnect,
+    downloads,
+    phaseb,
+    previews,
+    pull,
+    queries,
+    remote_state,
+    streaming,
+)
 from .icloud import ICloudClient, ICloudError, TwoFactorRequired
 from .models import DuplicatePair, Photo
 
@@ -349,6 +359,11 @@ def _accounts_context(request, **extra) -> dict:
         "accounts": _accounts_rows(settings.WORKING_FOLDER),
         "download_errors": _recent_download_errors(),
         "added": request.GET.get("added", ""),
+        # T21 two-step confirm: `?confirm=<email>` re-renders the accounts
+        # page with an inline confirmation block for that one row instead of
+        # a JS confirm() dialog (CLAUDE.md hard rule 4).
+        "confirm_disconnect": request.GET.get("confirm", ""),
+        "disconnected": request.GET.get("disconnected", ""),
     }
     context.update(extra)
     return context
@@ -356,6 +371,30 @@ def _accounts_context(request, **extra) -> dict:
 
 def accounts(request):
     return render(request, "accounts.html", _accounts_context(request))
+
+
+def account_disconnect(request):
+    """ "Disconnect" (SPEC §18 UI, PLAN T21): removes the account's saved
+    session + its remote DB rows + cached previews. Keeps
+    `icloud-state/{slug}.json` (durable decisions -- re-attaching restores
+    rejections) and everything already in `selected/` (ordinary local files
+    by then). Two-step confirm lives entirely in `accounts.html` (GET
+    `?confirm=<email>` renders the inline confirm block below); this view is
+    only the POST that actually performs it.
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    folder = settings.WORKING_FOLDER
+    email = request.POST.get("account", "").strip()
+
+    try:
+        disconnect.disconnect_account(folder, email)
+    except disconnect.PullInFlight as exc:
+        context = _accounts_context(request, disconnect_error=str(exc))
+        return render(request, "accounts.html", context)
+
+    return redirect(f"{reverse('accounts')}?disconnected={email}")
 
 
 def account_login(request):

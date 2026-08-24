@@ -80,6 +80,7 @@ from __future__ import annotations
 
 import logging
 import os
+import shutil
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -235,6 +236,21 @@ class ICloudClient:
             return None
 
         return cls(email, service)
+
+    @classmethod
+    def forget_session(cls, email: str) -> None:
+        """Delete this account's local session-token store (PLAN M5 T21,
+        "Disconnect account"). Lives on this read-only-guarded class (see
+        `test_public_surface_is_read_only`) but is NOT an iCloud write --
+        despite the name, it never calls into pyicloud or Apple's API at
+        all; it only removes files under OUR OWN
+        `GLOBAL_DATA_DIR/icloud-sessions/<slug>/` (the cookie directory
+        `login`/`from_session` create and read), so a subsequent
+        `from_session` call for this account correctly returns `None` until
+        the user re-authenticates. Idempotent: an absent/already-removed
+        session dir is a no-op.
+        """
+        shutil.rmtree(_session_dir(email), ignore_errors=True)
 
     def submit_2fa(self, code: str) -> bool:
         try:

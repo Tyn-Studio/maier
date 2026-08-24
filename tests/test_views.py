@@ -6,6 +6,7 @@ from django.conf import settings
 from django.urls import reverse
 
 from fixtures import build_fixture_folder
+from maier.core import disconnect as disconnect_module
 from maier.core import downloads as downloads_module
 from maier.core import pull as pull_module
 from maier.core import remote_state
@@ -1535,3 +1536,124 @@ def test_t18_grid_shows_accounts_nav_link(client):
     response = client.get(reverse("grid"))
 
     assert f'href="{reverse("accounts")}"' in response.content.decode()
+
+
+# --- disconnect account (T21, SPEC §18) ---------------------------------------
+
+
+@pytest.fixture
+def _t21_global_data_dir(tmp_path, monkeypatch):
+    data_dir = tmp_path / "global-data"
+    monkeypatch.setattr(settings, "GLOBAL_DATA_DIR", data_dir)
+    return data_dir
+
+
+@pytest.mark.django_db
+def test_t21_accounts_confirm_param_renders_confirm_block_without_deleting(client):
+    email = "t_t21_confirm@example.com"
+    remote_state.save_state(settings.WORKING_FOLDER, remote_state.AccountState(account=email))
+    photo = _remote_db_photo("r_t21_confirm", account=email)
+
+    response = client.get(reverse("accounts"), {"confirm": email})
+
+    body = response.content.decode()
+    assert response.status_code == 200
+    assert "Yes, disconnect" in body
+    assert email in body
+    assert "keeps everything already in" in body
+    # Nothing deleted by the GET -- confirm is a separate step.
+    assert Photo.objects.filter(pk=photo.pk).exists()
+
+
+@pytest.mark.django_db
+def test_t21_accounts_without_confirm_param_hides_confirm_block(client):
+    email = "t_t21_noconfirm@example.com"
+    remote_state.save_state(settings.WORKING_FOLDER, remote_state.AccountState(account=email))
+
+    response = client.get(reverse("accounts"))
+
+    assert "Yes, disconnect" not in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_t21_account_disconnect_post_removes_rows_and_previews_then_redirects(client):
+    email = "t_t21_post@example.com"
+    remote_state.save_state(settings.WORKING_FOLDER, remote_state.AccountState(account=email))
+    photo = _remote_db_photo("r_t21_post", account=email)
+    previews_dir = settings.WORKING_FOLDER / ".maier" / "previews"
+    previews_dir.mkdir(parents=True, exist_ok=True)
+    preview_path = previews_dir / f"icloud-{remote_state.account_slug(email)}-r_t21_post.jpg"
+    preview_path.write_bytes(b"jpg")
+
+    response = client.post(reverse("account-disconnect"), {"account": email})
+
+    assert response.status_code == 302
+    assert response["Location"] == f"{reverse('accounts')}?disconnected={email}"
+    assert not Photo.objects.filter(pk=photo.pk).exists()
+    assert not preview_path.exists()
+    # Following the redirect shows the success message.
+    follow = client.get(response["Location"])
+    assert f"Disconnected {email}" in follow.content.decode()
+
+
+@pytest.mark.django_db
+def test_t21_account_disconnect_pull_in_flight_shows_error_nothing_deleted(client, monkeypatch):
+    email = "t_t21_inflight@example.com"
+    photo = _remote_db_photo("r_t21_inflight", account=email)
+    monkeypatch.setattr(disconnect_module, "pull_in_flight", lambda account: True)
+
+    response = client.post(reverse("account-disconnect"), {"account": email})
+
+    assert response.status_code == 200
+    assert "currently running" in response.content.decode()
+    assert Photo.objects.filter(pk=photo.pk).exists()
+
+
+@pytest.mark.django_db
+def test_t21_account_disconnect_get_not_allowed(client):
+    response = client.get(reverse("account-disconnect"))
+
+    assert response.status_code == 405
+
+
+@pytest.mark.django_db
+def test_t21_account_disconnect_removes_session_dir(client, _t21_global_data_dir):
+    email = "t_t21_session@example.com"
+    session_dir = _t21_global_data_dir / "icloud-sessions" / remote_state.account_slug(email)
+    session_dir.mkdir(parents=True)
+    (session_dir / "cookie.txt").write_text("token")
+
+    response = client.post(reverse("account-disconnect"), {"account": email})
+
+    assert response.status_code == 302
+    assert not session_dir.exists()
+
+
+@pytest.mark.django_db
+def test_t21_account_disconnect_keeps_state_file_and_local_selected_row(client):
+    email = "t_t21_keep@example.com"
+    state = remote_state.AccountState(account=email, decisions={"r_t21_keep_rejected": "rejected"})
+    remote_state.save_state(settings.WORKING_FOLDER, state)
+    slug = remote_state.account_slug(email)
+    local_photo = Photo.objects.create(
+        source=Photo.SOURCE_LOCAL,
+        account=email,
+        remote_id="r_t21_keep_downloaded",
+        relative_path=f"selected/{slug}/r_t21_keep_downloaded.jpg",
+        status=Photo.STATUS_SELECTED,
+        provenance=slug,
+        file_size=1234,
+        file_mtime=1_700_000_000.0,
+        captured_at=_CAPTURED,
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+    )
+
+    response = client.post(reverse("account-disconnect"), {"account": email})
+
+    assert response.status_code == 302
+    reloaded_state = remote_state.load_state(settings.WORKING_FOLDER, email)
+    assert reloaded_state.decisions == {"r_t21_keep_rejected": "rejected"}
+    assert email in remote_state.list_accounts(settings.WORKING_FOLDER)
+    local_photo.refresh_from_db()
+    assert local_photo.source == Photo.SOURCE_LOCAL

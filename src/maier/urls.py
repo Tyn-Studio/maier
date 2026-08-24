@@ -19,5 +19,6 @@ urlpatterns = [
     path("accounts/login", views.account_login, name="account-login"),
     path("accounts/2fa", views.account_2fa, name="account-2fa"),
     path("accounts/pull", views.account_pull, name="account-pull"),
+    path("accounts/disconnect", views.account_disconnect, name="account-disconnect"),
     path("pull-status", views.pull_status, name="pull-status"),
 ]

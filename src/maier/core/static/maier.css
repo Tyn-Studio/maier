@@ -824,3 +824,40 @@ main {
   cursor: pointer;
   font-size: 0.8rem;
 }
+
+/* --- disconnect account (T21, SPEC §18) --------------------------------- */
+
+.disconnect-link {
+  font-size: 0.8rem;
+  color: var(--red);
+}
+
+.disconnect-confirm {
+  margin-top: 0.5rem;
+  padding: 0.6rem;
+  background: rgba(226, 85, 75, 0.1);
+  border: 1px solid var(--red);
+  border-radius: 6px;
+  font-size: 0.85rem;
+  max-width: 360px;
+}
+
+.disconnect-confirm p {
+  margin: 0 0 0.5rem;
+  color: var(--fg);
+}
+
+.disconnect-confirm form {
+  display: inline-block;
+  margin-right: 0.5rem;
+}
+
+button.danger {
+  background: var(--red);
+  color: #fff;
+  border: 1px solid var(--red);
+  border-radius: 4px;
+  padding: 0.3rem 0.6rem;
+  cursor: pointer;
+  font-size: 0.8rem;
+}

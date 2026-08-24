@@ -636,6 +636,23 @@ def test_session_dir_under_monkeypatched_global_data_dir(_global_data_dir):
     assert path == _global_data_dir / "icloud-sessions" / "user-example-com"
 
 
+# --- forget_session (PLAN T21: disconnect account) -------------------------
+
+
+def test_forget_session_deletes_session_dir(_global_data_dir):
+    session_dir = icloud._session_dir("user@example.com")
+    session_dir.mkdir(parents=True)
+    (session_dir / "cookie.txt").write_text("token")
+
+    icloud.ICloudClient.forget_session("user@example.com")
+
+    assert not session_dir.exists()
+
+
+def test_forget_session_missing_dir_is_noop(_global_data_dir):
+    icloud.ICloudClient.forget_session("never-logged-in@example.com")  # must not raise
+
+
 # --- public surface guard (hard rule 8: read-only) ------------------------
 
 
@@ -652,6 +669,10 @@ def test_public_surface_is_read_only():
         "list_assets",
         "download",
         "download_live_video",
+        # T21: deletes OUR OWN session-token store on disk -- never touches
+        # pyicloud/Apple's API, so it doesn't violate read-only (see
+        # `forget_session`'s docstring in icloud.py).
+        "forget_session",
     }
 
 

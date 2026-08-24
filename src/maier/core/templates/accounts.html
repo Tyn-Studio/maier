@@ -8,8 +8,16 @@
 <div class="banner success">Added {{ added }}.</div>
 {% endif %}
 
+{% if disconnected %}
+<div class="banner success">Disconnected {{ disconnected }}.</div>
+{% endif %}
+
 {% if pull_error %}
 <div class="banner error">{{ pull_error }}</div>
+{% endif %}
+
+{% if disconnect_error %}
+<div class="banner error">{{ disconnect_error }}</div>
 {% endif %}
 
 {% if download_errors %}
@@ -46,7 +54,23 @@
           <input type="hidden" name="account" value="{{ row.email }}">
           <button type="submit">Pull now</button>
         </form>
+        <a class="disconnect-link" href="?confirm={{ row.email|urlencode }}">Disconnect&hellip;</a>
         {% include "_pull_progress.html" with progress=row.pull_progress account=row.email slug=row.slug %}
+        {% if confirm_disconnect == row.email %}
+        <div class="disconnect-confirm">
+          <p>
+            This removes {{ row.email }}'s photos from the timeline and its saved session;
+            it keeps everything already in <code>selected/</code> and remembers your
+            rejections if you re-attach this account.
+          </p>
+          <form method="post" action="{% url 'account-disconnect' %}">
+            {% csrf_token %}
+            <input type="hidden" name="account" value="{{ row.email }}">
+            <button type="submit" class="danger">Yes, disconnect</button>
+          </form>
+          <a href="{% url 'accounts' %}">Cancel</a>
+        </div>
+        {% endif %}
       </td>
     </tr>
     {% empty %}
