@@ -2066,15 +2066,11 @@ def test_settings_page_non_htmx_post_still_redirects_to_full_page(client):
 
 
 @pytest.mark.django_db
-def test_settings_page_post_working_range_change_kicks_pull_for_live_sessions(
-    client, monkeypatch
-):
+def test_settings_page_post_working_range_change_kicks_pull_for_live_sessions(client, monkeypatch):
     from types import SimpleNamespace
 
     live_email = "t_t31_range_live@example.com"
-    monkeypatch.setattr(
-        views_module.remote_state, "list_accounts", lambda folder: [live_email]
-    )
+    monkeypatch.setattr(views_module.remote_state, "list_accounts", lambda folder: [live_email])
     calls = []
     monkeypatch.setattr(
         views_module.ICloudClient,
