@@ -7,6 +7,12 @@ name: Release
 # a real run against a tag to shake out the PyInstaller/signing specifics
 # before it's trusted for an actual release.
 
+# The publish-release job creates the GitHub Release -- needs write access
+# (new repos default GITHUB_TOKEN to read-only; caused a 403 on the first
+# v0.1.0 attempt, 2026-08-24).
+permissions:
+  contents: write
+
 on:
   push:
     tags:
