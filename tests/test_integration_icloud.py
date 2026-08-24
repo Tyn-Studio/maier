@@ -121,7 +121,11 @@ def _snapshot(folder: Path) -> set[str]:
     }
 
 
-def _wait_for(predicate, timeout: float = 5) -> None:
+def _wait_for(predicate, timeout: float = 15) -> None:
+    # 15s, not 5: the full suite's background threads (phase B, download
+    # workers, preview pools from neighbouring files) make 5s flake ~1-in-3
+    # under load while isolation always passes (observed repeatedly,
+    # 2026-08-24).
     deadline = time.time() + timeout
     while time.time() < deadline:
         if predicate():

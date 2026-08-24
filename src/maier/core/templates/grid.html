@@ -12,35 +12,65 @@
      hx-target="#grid-content"
      hx-swap="innerHTML"
      hx-include="#filter-bar select, #filter-bar input">
-  <label>Status
-    <select name="status">
+  <div class="filter-field">
+    <label for="filter-status">Status</label>
+    <select id="filter-status" name="status">
       <option value="" {% if not filter_status %}selected{% endif %}>All</option>
       <option value="optional" {% if filter_status == "optional" %}selected{% endif %}>Optional</option>
       <option value="selected" {% if filter_status == "selected" %}selected{% endif %}>Selected</option>
       <option value="rejected" {% if filter_status == "rejected" %}selected{% endif %}>Rejected</option>
     </select>
-  </label>
-  <label>Provenance
-    <select name="provenance">
+  </div>
+  <div class="filter-field">
+    <label for="filter-provenance">Provenance</label>
+    <select id="filter-provenance" name="provenance">
       <option value="">All</option>
       {% for p in provenances %}
       <option value="{{ p }}" {% if p == filter_provenance %}selected{% endif %}>{{ p }}</option>
       {% endfor %}
     </select>
-  </label>
-  <label>From <input type="date" name="from" value="{{ filter_from }}"></label>
-  <label>To <input type="date" name="to" value="{{ filter_to }}"></label>
-  <label class="filter-checkbox">
-    <input type="checkbox" name="dates" value="low" {% if filter_dates_low %}checked{% endif %}>
-    Low-confidence dates
-  </label>
-  <label>Size
+  </div>
+  {% comment %}
+  T33: From/To now double as the persistent working range, not just a
+  one-off grid filter. Alongside the existing bar-level hx-get (unchanged,
+  reloads #grid-content), each date input independently POSTs its own
+  change to the settings endpoint's existing working_from/working_to
+  partial-update handling (views._apply_partial_settings) -- hx-swap="none"
+  since nothing on this page needs to change as a result, just persist.
+  hx-vals (rather than hx-include) remaps this field's value onto the name
+  settings.py expects (working_from/working_to) while keeping the plain
+  `from`/`to` names the GET filter and querystring need; both inputs'
+  current values are sent together so neither side of the saved range is
+  ever clobbered by only-one-changed. A trailing "change" naturally fires
+  both this element's own hx-post and (by bubbling) the bar's hx-get --
+  intentional, see PLAN T33.
+  {% endcomment %}
+  <div class="filter-field">
+    <label for="filter-from">From</label>
+    <input type="date" id="filter-from" name="from" value="{{ filter_from }}"
+           hx-post="{% url 'settings' %}" hx-trigger="change delay:400ms" hx-swap="none"
+           hx-vals='js:{working_from: document.getElementById("filter-from").value, working_to: document.getElementById("filter-to").value}'>
+  </div>
+  <div class="filter-field">
+    <label for="filter-to">To</label>
+    <input type="date" id="filter-to" name="to" value="{{ filter_to }}"
+           hx-post="{% url 'settings' %}" hx-trigger="change delay:400ms" hx-swap="none"
+           hx-vals='js:{working_from: document.getElementById("filter-from").value, working_to: document.getElementById("filter-to").value}'>
+  </div>
+  <div class="filter-field filter-field-checkbox">
+    <label class="filter-checkbox">
+      <input type="checkbox" name="dates" value="low" {% if filter_dates_low %}checked{% endif %}>
+      Low-confidence dates
+    </label>
+  </div>
+  <div class="filter-field">
+    <label for="cell-size">Size</label>
     <input type="range" id="cell-size" min="120" max="340" step="20" value="180">
-  </label>
+  </div>
   <button type="button" hx-post="{% url 'rescan' %}" hx-target="#scan-poller" hx-swap="outerHTML">Rescan</button>
   <form method="post" action="{% url 'export-now' %}" class="export-now-form">
     {% csrf_token %}
-    <button type="submit">Export &uarr;</button>
+    <button type="submit">Export</button>
   </form>
   {% if missing_count %}
     {% if show_missing %}

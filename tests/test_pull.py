@@ -360,13 +360,13 @@ def test_new_asset_preview_enqueue_respects_range_but_row_always_upserts(tmp_pat
     assert Photo.objects.filter(remote_id="r_in").exists()
     assert Photo.objects.filter(remote_id="r_out").exists()
 
-    # But the preview fetch is scoped: only the in-range asset's preview was
-    # actually requested/landed.
-    assert client.downloaded == [("r_in", "thumb")]
+    # Range = PRIORITY, not fence (CTO, 2026-08-24): the in-range asset's
+    # preview fetches first, the out-of-range one backfills afterwards.
+    assert client.downloaded == [("r_in", "thumb"), ("r_out", "thumb")]
     assert remote_preview_dest(tmp_path, "luis@example.com", "r_in").exists()
-    assert not remote_preview_dest(tmp_path, "luis@example.com", "r_out").exists()
-    assert progress.total == 1
-    assert progress.done == 1
+    assert remote_preview_dest(tmp_path, "luis@example.com", "r_out").exists()
+    assert progress.total == 2
+    assert progress.done == 2
 
 
 @pytest.mark.django_db
@@ -406,9 +406,11 @@ def test_backlog_preview_repair_respects_range(tmp_path):
 
     pull_account(tmp_path, client, PullProgress())
 
+    # Priority ordering: both land, in-range strictly first (the backfill is
+    # only submitted after the enumeration/in-range work).
     assert remote_preview_dest(tmp_path, "luis@example.com", "r_in").exists()
-    assert not remote_preview_dest(tmp_path, "luis@example.com", "r_out").exists()
-    assert client.downloaded == [("r_in", "thumb")]
+    assert remote_preview_dest(tmp_path, "luis@example.com", "r_out").exists()
+    assert client.downloaded == [("r_in", "thumb"), ("r_out", "thumb")]
 
 
 # --- two-phase progress accounting ------------------------------------------

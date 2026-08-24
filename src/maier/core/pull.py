@@ -196,16 +196,20 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
         # libraries gain OLD photos later (device syncs, imports), and a
         # capture-date filter would hide those forever. "Incremental" per
         # SPEC §18 = skip already-known remote_ids and re-downloads.
-        backlog: list[tuple[str, str]] = []
-        backlog_qs = Photo.objects.filter(
-            source=Photo.SOURCE_ICLOUD, account=client.account
-        ).exclude(remote_id=None)
-        if range_start is not None:
-            backlog_qs = backlog_qs.filter(captured_at__gte=range_start)
-        if range_end is not None:
-            backlog_qs = backlog_qs.filter(captured_at__lte=range_end)
-        for rid, media_type in backlog_qs.order_by("remote_id").values_list(
-            "remote_id", "media_type"
+        # CTO decision (2026-08-24, supersedes T29's hard fence): the working
+        # range is a PRIORITY, not a filter -- in-range previews fetch first
+        # (capture-date ascending, matching the grid's scroll order so the
+        # visible screen fills top-down), then EVERYTHING else backfills
+        # (newest-first) after the enumeration finishes.
+        backlog: list[tuple[str, str]] = []  # in-range, fetched immediately
+        rest: list[tuple[str, str]] = []  # out-of-range, fetched post-enum
+        backlog_qs = (
+            Photo.objects.filter(source=Photo.SOURCE_ICLOUD, account=client.account)
+            .exclude(remote_id=None)
+            .order_by("captured_at", "pk")
+        )
+        for rid, media_type, captured_at in backlog_qs.values_list(
+            "remote_id", "media_type", "captured_at"
         ):
             dest = previews_module.remote_preview_dest(folder, client.account, rid)
             if dest.exists():
@@ -216,7 +220,11 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
                     dest.unlink(missing_ok=True)
                 else:
                     continue
-            backlog.append((rid, media_type))
+            if _in_range(captured_at):
+                backlog.append((rid, media_type))
+            else:
+                rest.append((rid, media_type))
+        rest.reverse()  # backfill newest-first (query was ascending)
 
         iteration_failed = False
         max_captured_at: datetime | None = state.cursor
@@ -248,6 +256,10 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
                         with counters_lock:
                             progress.total += 1
                         pool.submit(_fetch_preview, asset.remote_id, asset.media_type)
+                    else:
+                        # Out-of-range discovery: backfilled after the
+                        # enumeration, behind the in-range work.
+                        rest.append((asset.remote_id, asset.media_type))
             except Exception as exc:
                 progress.errors.append(f"list_assets: {exc}")
                 iteration_failed = True
@@ -261,6 +273,15 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
                 to_fetch = list(deferred)
                 deferred.clear()
             for rid, media_type in to_fetch:
+                pool.submit(_fetch_preview, rid, media_type, False)
+
+            # Then the whole-library backfill: everything outside the
+            # working range, newest-first, strictly behind the in-range
+            # work in the pool's FIFO order. All post-enumeration, so no
+            # album-pagination contention either.
+            with counters_lock:
+                progress.total += len(rest)
+            for rid, media_type in rest:
                 pool.submit(_fetch_preview, rid, media_type, False)
         # Pool context exit drains all queued preview fetches.
 

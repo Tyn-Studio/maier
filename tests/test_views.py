@@ -2382,7 +2382,9 @@ def test_grid_explicit_empty_param_wins_over_working_range_default(client):
 
 
 @pytest.mark.django_db
-def test_grid_shows_working_range_indicator(client):
+def test_grid_no_longer_shows_working_range_chip_in_header(client):
+    # T33: the header's "Working: X -> Y" chip was removed -- the grid's own
+    # From/To filter is now the single, persistent source of the range.
     folder_settings.save_settings(
         settings.WORKING_FOLDER,
         folder_settings.FolderSettings(working_from="2026-02-01", working_to="2026-03-17"),
@@ -2391,9 +2393,28 @@ def test_grid_shows_working_range_indicator(client):
     response = client.get(reverse("grid"))
 
     body = response.content.decode()
-    assert "Working: 2026-02-01" in body
-    assert "2026-03-17" in body
-    assert f'href="{reverse("setup")}?step=2"' in body
+    assert "working-range-link" not in body
+    assert "Working:" not in body
+
+
+@pytest.mark.django_db
+def test_grid_nav_link_has_active_class(client):
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    header = body.split('class="app-header"', 1)[1].split("</header>", 1)[0]
+    assert f'class="app-nav-link active" href="{reverse("grid")}"' in header
+    assert f'class="app-nav-link" href="{reverse("summary")}"' in header
+
+
+@pytest.mark.django_db
+def test_settings_nav_link_has_active_class(client):
+    response = client.get(reverse("settings"))
+
+    body = response.content.decode()
+    header = body.split('class="app-header"', 1)[1].split("</header>", 1)[0]
+    assert f'class="app-nav-link active" href="{reverse("settings")}"' in header
+    assert f'class="app-nav-link" href="{reverse("grid")}"' in header
 
 
 # --- setup wizard steps (PLAN T29) -------------------------------------------
@@ -2588,12 +2609,19 @@ def test_nav_header_absent_on_review(client):
     assert 'class="app-header"' not in response.content.decode()
 
 
+def _filter_bar_html(body: str) -> str:
+    # T33: the bar now nests a .filter-field <div> per control (label above
+    # control), so the naive "split on the first </div>" boundary used
+    # before T33 would only capture the Status field. Slice up to the
+    # #grid-content div that immediately follows the filter bar instead.
+    return body.split('id="filter-bar"', 1)[1].split('<div id="grid-content"', 1)[0]
+
+
 @pytest.mark.django_db
 def test_grid_filter_bar_no_longer_has_moved_nav_links(client):
     response = client.get(reverse("grid"))
 
-    body = response.content.decode()
-    filter_bar = body.split('id="filter-bar"', 1)[1].split("</div>", 1)[0]
+    filter_bar = _filter_bar_html(response.content.decode())
     assert "summary-link" not in filter_bar
     assert "accounts-link" not in filter_bar
     assert "settings-link" not in filter_bar
@@ -2605,8 +2633,7 @@ def test_grid_filter_bar_no_longer_has_moved_nav_links(client):
 def test_grid_filter_bar_keeps_actual_filters_rescan_export_and_size(client):
     response = client.get(reverse("grid"))
 
-    body = response.content.decode()
-    filter_bar = body.split('id="filter-bar"', 1)[1].split("</div>", 1)[0]
+    filter_bar = _filter_bar_html(response.content.decode())
     assert 'name="status"' in filter_bar
     assert 'name="provenance"' in filter_bar
     assert 'name="from"' in filter_bar
@@ -2614,6 +2641,41 @@ def test_grid_filter_bar_keeps_actual_filters_rescan_export_and_size(client):
     assert 'id="cell-size"' in filter_bar
     assert f'hx-post="{reverse("rescan")}"' in filter_bar
     assert f'action="{reverse("export-now")}"' in filter_bar
+
+
+@pytest.mark.django_db
+def test_grid_filter_bar_uses_filter_field_wrapper_for_labelled_controls(client):
+    # T33 alignment pass: Status/Provenance/From/To/Size share one wrapper
+    # class so label-above-control is consistent across all five.
+    response = client.get(reverse("grid"))
+
+    filter_bar = _filter_bar_html(response.content.decode())
+    assert filter_bar.count('class="filter-field"') == 5
+
+
+@pytest.mark.django_db
+def test_grid_date_inputs_carry_working_range_persist_attrs(client):
+    # T33: changing From/To in the grid also persists as the working range
+    # via a second htmx request (hx-post to settings, hx-swap="none"),
+    # independent of the existing hx-get filter reload on the bar itself.
+    response = client.get(reverse("grid"))
+
+    filter_bar = _filter_bar_html(response.content.decode())
+    settings_url = reverse("settings")
+    assert filter_bar.count(f'hx-post="{settings_url}"') == 2
+    assert filter_bar.count('hx-swap="none"') == 2
+    assert filter_bar.count('hx-trigger="change delay:400ms"') == 2
+    assert "working_from" in filter_bar
+    assert "working_to" in filter_bar
+
+
+@pytest.mark.django_db
+def test_grid_export_button_label_has_no_arrow_glyph(client):
+    response = client.get(reverse("grid"))
+
+    filter_bar = _filter_bar_html(response.content.decode())
+    assert ">Export<" in filter_bar
+    assert "&uarr;" not in filter_bar
 
 
 @pytest.mark.django_db

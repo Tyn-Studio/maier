@@ -10,6 +10,10 @@
   --border: #2a2d33;
   --green: #35c46a;
   --red: #e2554b;
+  /* T33: single source of truth for the filter bar's control row height --
+     inputs/selects/buttons/badges all size to this so their bottoms land on
+     one baseline when the bar aligns items to flex-end. */
+  --control-height: 2.15rem;
 }
 
 * {
@@ -73,12 +77,21 @@ main {
 }
 
 /* --- filter bar ------------------------------------------------------ */
+/* T33: every control (Status/Provenance/From/To/Size, checkbox, buttons,
+   the Missing badge) is a direct flex child of .filter-bar and bottom-
+   aligns via align-items: flex-end -- a single alignment rule instead of
+   the old per-element align-self overrides that caused the ragged
+   baselines the CTO flagged. Label-bearing controls sit inside a
+   .filter-field column (fixed-height label above a --control-height-tall
+   control); label-less controls (buttons, the checkbox, the badge) are
+   themselves --control-height tall, so every element's bottom edge lands
+   on the same line regardless of whether it has a label above it. */
 
 .filter-bar {
   display: flex;
   flex-wrap: wrap;
-  align-items: end;
-  gap: 1rem;
+  align-items: flex-end;
+  gap: 0.75rem 1rem;
   padding: 0.75rem;
   margin-bottom: 1rem;
   background: var(--bg-raised);
@@ -86,50 +99,59 @@ main {
   border-radius: 8px;
 }
 
-.filter-bar label {
+.filter-field {
   display: flex;
   flex-direction: column;
   gap: 0.25rem;
+}
+
+.filter-field label {
+  display: block;
+  height: 1rem;
+  line-height: 1rem;
   font-size: 0.8rem;
   color: var(--muted);
 }
 
 .filter-bar select,
-.filter-bar input,
-.filter-bar button {
+.filter-bar input:not([type="checkbox"]) {
   background: var(--bg);
   color: var(--fg);
   border: 1px solid var(--border);
   border-radius: 4px;
-  padding: 0.35rem 0.5rem;
+  padding: 0 0.5rem;
   font-size: 0.9rem;
+  height: var(--control-height);
 }
 
-.filter-bar button {
+.filter-bar button,
+.export-now-form button {
+  background: var(--bg);
+  color: var(--fg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  padding: 0 0.6rem;
+  font-size: 0.9rem;
+  height: var(--control-height);
+  display: inline-flex;
+  align-items: center;
   cursor: pointer;
-  align-self: center;
+}
+
+.filter-field-checkbox .filter-checkbox {
+  height: var(--control-height);
 }
 
 .filter-bar .filter-checkbox {
   flex-direction: row;
   align-items: center;
   gap: 0.35rem;
-  align-self: center;
 }
 
 .filter-checkbox input {
   padding: 0;
-}
-
-.working-range-link {
-  align-self: center;
-  padding: 0.35rem 0.6rem;
-  border-radius: 4px;
-  border: 1px solid var(--border);
-  color: var(--muted);
-  text-decoration: none;
-  font-size: 0.8rem;
-  white-space: nowrap;
+  width: 1rem;
+  height: 1rem;
 }
 
 /* --- shared app header (PLAN T30) ---------------------------------- */
@@ -169,6 +191,11 @@ main {
   color: var(--fg);
 }
 
+.app-nav-link.active {
+  color: var(--fg);
+  font-weight: 600;
+}
+
 .setup-step {
   max-width: 560px;
 }
@@ -190,8 +217,10 @@ main {
 }
 
 .missing-badge {
-  align-self: center;
-  padding: 0.35rem 0.6rem;
+  height: var(--control-height);
+  display: inline-flex;
+  align-items: center;
+  padding: 0 0.6rem;
   border-radius: 4px;
   border: 1px solid var(--red);
   color: var(--red);
@@ -1038,7 +1067,6 @@ button.danger {
   display: inline-block;
 }
 
-.export-now-form button,
 .settings-form button {
   background: var(--bg-raised);
   color: var(--fg);
