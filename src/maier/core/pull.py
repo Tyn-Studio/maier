@@ -144,52 +144,21 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
 
         counters_lock = threading.Lock()
 
-        # Cache-miss preview downloads walk the album via `photos.all.get(id)`,
-        # which CONTENDS with the active enumeration over the album's shared
-        # pagination and starves every worker (observed live: "previews
-        # 0 / 2788" for minutes, 2026-08-24). Two-layer fix:
-        #  1. Preferred: give the workers their OWN client (independent
-        #     pyicloud session + album) via from_session -- uncontended
-        #     `.get(id)` lookups are fast (~2s incl. download, probed live),
-        #     so in-range previews flow from the first seconds even while
-        #     the enumeration runs. (Deferring them instead just reproduced
-        #     the gray-grid for the whole enumeration -- v0.1.1 regression.)
-        #  2. Fallback (no second session available -- expired mid-pull, or
-        #     a test fake without from_session): defer cache misses until
-        #     the enumeration has cached them, via `has_asset_cached`.
-        preview_client = client
-        from_session = getattr(type(client), "from_session", None)
-        if from_session is not None:
-            try:
-                second = from_session(client.account)
-            except Exception:
-                second = None
-            if second is not None:
-                preview_client = second
-        has_cached = (
-            None if preview_client is not client else getattr(client, "has_asset_cached", None)
-        )
-        deferred: list[tuple[str, str]] = []
-        deferred_lock = threading.Lock()
-
-        def _fetch_preview(rid: str, media_type: str, allow_defer: bool = True) -> None:
+        def _fetch_preview(rid: str, media_type: str) -> None:
             # The bulk sync fetches the small "thumb" tier (~60KB, plenty for
-            # grid cells): at 41k real-library scale the ~700KB "medium" tier
-            # meant ~28GB and hours of downloading before the grid was fully
-            # browsable (2026-08-24). Review-screen quality upgrades come on
-            # demand later. Videos need the JPEG poster variants -- their
-            # plain thumb/medium renditions are MP4s, which saved under a
-            # .jpg preview name render as broken thumbnails.
+            # grid cells; the ~700KB "medium" tier meant ~28GB at 41k scale).
+            # Videos need the JPEG poster variants -- their plain thumb/medium
+            # renditions are MP4s. Callers submit a fetch ONLY for assets the
+            # enumeration has already cached (direct CDN download, the one
+            # path that has never failed live) -- except the post-enumeration
+            # leftovers, whose album lookups are bounded by the process-wide
+            # socket timeout (icloud.py) instead of hanging forever.
             version = "thumb_image" if media_type == Photo.MEDIA_VIDEO else "thumb"
             err = None
             try:
                 dest = previews_module.remote_preview_dest(folder, client.account, rid)
                 if not dest.exists():
-                    if allow_defer and has_cached is not None and not has_cached(rid):
-                        with deferred_lock:
-                            deferred.append((rid, media_type))
-                        return  # done is counted when the deferred fetch runs
-                    preview_client.download(rid, version, dest)
+                    client.download(rid, version, dest)
             except Exception as exc:
                 err = f"{rid}: preview fetch failed: {exc}"
             with counters_lock:
@@ -197,109 +166,93 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
                 if err is not None:
                     progress.errors.append(err)
 
-        # Single concurrent pass (real-library findings, 2026-08-24: ~30
-        # assets/s enumeration, 41k items, hours of serial previews):
-        #  - the enumeration thread streams metadata, upserting new rows as
-        #    they arrive so the timeline fills progressively;
-        #  - four preview workers run THROUGHOUT, starting immediately on
-        #    the known backlog (rows whose preview never landed -- failed
-        #    fetch, wiped .maier/, or an interrupted earlier pull) and
-        #    picking up each new row as it's discovered. A re-pull after an
-        #    interruption therefore shows thumbnails right away instead of
-        #    after another full enumeration. The workers share the client's
-        #    one requests.Session -- urllib3's pool handles concurrent use.
-        #
-        # The enumeration is deliberately NOT filtered by the cursor: iCloud
-        # libraries gain OLD photos later (device syncs, imports), and a
-        # capture-date filter would hide those forever. "Incremental" per
-        # SPEC §18 = skip already-known remote_ids and re-downloads.
-        # CTO decision (2026-08-24, supersedes T29's hard fence): the working
-        # range is a PRIORITY, not a filter -- in-range previews fetch first
-        # (capture-date ascending, matching the grid's scroll order so the
-        # visible screen fills top-down), then EVERYTHING else backfills
-        # (newest-first) after the enumeration finishes.
-        backlog: list[tuple[str, str]] = []  # in-range, fetched immediately
-        rest: list[tuple[str, str]] = []  # out-of-range, fetched post-enum
-        backlog_qs = (
+        # Fetch strategy (rebuilt from live findings, 2026-08-24):
+        #  - Apple TARPITS throttled album-lookup queries (no response, no
+        #    error) and pyicloud has no timeouts -- bulk fetching via lookups
+        #    wedged all 8 workers for the whole day ("previews 0 / 2788").
+        #  - The enumeration itself caches every asset it scans, and cached
+        #    assets download via a direct CDN URL -- the only reliable path.
+        #  - list_assets enumerates NEWEST-first (icloud.py), so a recent
+        #    working range is cached within the first minutes.
+        # So: previews are fetched FROM the enumeration stream -- the moment
+        # an asset in the pending sets is scanned, its fetch is submitted.
+        # In-range items fetch immediately; out-of-range items queue up and
+        # backfill after the enumeration (range = priority, not fence).
+        backlog_pending: dict[str, str] = {}  # rid -> media_type, in-range
+        rest_pending: dict[str, str] = {}  # rid -> media_type, out-of-range
+        for rid, media_type, captured_at in (
             Photo.objects.filter(source=Photo.SOURCE_ICLOUD, account=client.account)
             .exclude(remote_id=None)
             .order_by("captured_at", "pk")
-        )
-        for rid, media_type, captured_at in backlog_qs.values_list(
-            "remote_id", "media_type", "captured_at"
+            .values_list("remote_id", "media_type", "captured_at")
         ):
             dest = previews_module.remote_preview_dest(folder, client.account, rid)
             if dest.exists():
                 if media_type == Photo.MEDIA_VIDEO and not _is_jpeg(dest):
-                    # Cache repair: earlier pulls saved videos' "medium"
-                    # rendition (an MP4) under the .jpg preview name.
-                    # Previews are cache -- discard and refetch the poster.
+                    # Cache repair: earlier pulls saved videos' MP4 "medium"
+                    # rendition under the .jpg preview name.
                     dest.unlink(missing_ok=True)
                 else:
                     continue
             if _in_range(captured_at):
-                backlog.append((rid, media_type))
+                backlog_pending[rid] = media_type
             else:
-                rest.append((rid, media_type))
-        rest.reverse()  # backfill newest-first (query was ascending)
+                rest_pending[rid] = media_type
 
+        rest_ready: list[tuple[str, str]] = []
         iteration_failed = False
         max_captured_at: datetime | None = state.cursor
         with ThreadPoolExecutor(max_workers=8) as pool:
             with counters_lock:
-                progress.total += len(backlog)
-            for rid, media_type in backlog:
-                pool.submit(_fetch_preview, rid, media_type)
+                progress.total += len(backlog_pending)
 
             try:
                 for asset in client.list_assets(since=None):
                     with counters_lock:
                         progress.scanned += 1
-                    if asset.remote_id in known_ids or asset.remote_id in state.downloaded:
+                    rid = asset.remote_id
+
+                    if rid in backlog_pending:
+                        media_type = backlog_pending.pop(rid)
+                        pool.submit(_fetch_preview, rid, media_type)
+                    elif rid in rest_pending:
+                        rest_ready.append((rid, rest_pending.pop(rid)))
+
+                    if rid in known_ids or rid in state.downloaded:
                         continue
                     try:
-                        # T29: the row upsert always happens regardless of
-                        # the working range -- only the preview *fetch*
-                        # below is scoped (metadata enumeration stays
-                        # whole-library, per SPEC).
+                        # Row upsert always happens regardless of the range
+                        # (metadata stays whole-library, per SPEC).
                         _process_asset(folder, client, state, asset)
-                        known_ids.add(asset.remote_id)
+                        known_ids.add(rid)
                         if max_captured_at is None or asset.captured_at > max_captured_at:
                             max_captured_at = asset.captured_at
                     except Exception as exc:  # per-asset errors never abort the pull
-                        progress.errors.append(f"{asset.remote_id}: {exc}")
+                        progress.errors.append(f"{rid}: {exc}")
                         continue
                     if _in_range(asset.captured_at):
                         with counters_lock:
                             progress.total += 1
-                        pool.submit(_fetch_preview, asset.remote_id, asset.media_type)
+                        pool.submit(_fetch_preview, rid, asset.media_type)
                     else:
-                        # Out-of-range discovery: backfilled after the
-                        # enumeration, behind the in-range work.
-                        rest.append((asset.remote_id, asset.media_type))
+                        rest_ready.append((rid, asset.media_type))
             except Exception as exc:
                 progress.errors.append(f"list_assets: {exc}")
                 iteration_failed = True
 
-            # Enumeration is over (successfully or not): every asset it saw
-            # is in the client's cache, so the deferred backlog can now fetch
-            # without album lookups. Items STILL uncached (deleted remotely,
-            # or the enumeration died early) fall through to the slow-lookup
-            # path -- allow_defer=False so they can't loop back here.
-            with deferred_lock:
-                to_fetch = list(deferred)
-                deferred.clear()
-            for rid, media_type in to_fetch:
-                pool.submit(_fetch_preview, rid, media_type, False)
+            # In-range items the enumeration never yielded (deleted remotely,
+            # or the enumeration died early): try the album-lookup path --
+            # bounded by the socket timeout, so a tarpitted lookup costs one
+            # worker 60s, not forever.
+            for rid, media_type in backlog_pending.items():
+                pool.submit(_fetch_preview, rid, media_type)
 
-            # Then the whole-library backfill: everything outside the
-            # working range, newest-first, strictly behind the in-range
-            # work in the pool's FIFO order. All post-enumeration, so no
-            # album-pagination contention either.
+            # Whole-library backfill, newest-first (enumeration order),
+            # strictly behind the in-range work in the pool's FIFO order.
             with counters_lock:
-                progress.total += len(rest)
-            for rid, media_type in rest:
-                pool.submit(_fetch_preview, rid, media_type, False)
+                progress.total += len(rest_ready)
+            for rid, media_type in rest_ready:
+                pool.submit(_fetch_preview, rid, media_type)
         # Pool context exit drains all queued preview fetches.
 
         # The cursor is an informational last-pull watermark (max capture

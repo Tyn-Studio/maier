@@ -47,9 +47,11 @@
       <input type="checkbox" name="export_date_prefix" {% if export_settings.export_date_prefix %}checked{% endif %}>
       Prefix exported filenames with the capture date (YYYY-MM-DD_)
     </label>
-    {# Distinguishes "this form submitted, box unchecked" from "a different
-       section's form was submitted" -- an unchecked checkbox is simply
-       absent from POST (views._apply_partial_settings, PLAN T31). #}
+    {% comment %}Distinguishes "this form submitted, box unchecked" from "a
+    different section's form was submitted" -- an unchecked checkbox is
+    simply absent from POST (views._apply_partial_settings, PLAN T31).
+    NOTE: multi-line {# #} comments render as literal page text in Django --
+    third time this trap has bitten; always use {% templatetag opencomment %}comment{% templatetag closecomment %} blocks.{% endcomment %}
     <input type="hidden" name="export_date_prefix_submitted" value="1">
     <span id="export-saved-indicator"></span>
   </form>

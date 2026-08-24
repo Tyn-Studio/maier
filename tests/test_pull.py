@@ -405,7 +405,13 @@ def test_backlog_preview_repair_respects_range(tmp_path):
         file_mtime=0.0,
     )
     save_settings(tmp_path, FolderSettings(working_from="2025-06-10", working_to="2025-06-20"))
-    client = FakeClient("luis@example.com", [[]])  # nothing new to enumerate
+    # The enumeration yields both known assets (as a real full enumeration
+    # always does) -- fetches are driven FROM the enumeration stream, so an
+    # asset the enumeration never yields (deleted remotely) is correctly
+    # never fetched.
+    client = FakeClient(
+        "luis@example.com", [[_asset("r_in", in_range_at), _asset("r_out", out_of_range_at)]]
+    )
 
     pull_account(tmp_path, client, PullProgress())
 

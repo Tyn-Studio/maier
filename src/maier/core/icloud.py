@@ -81,6 +81,7 @@ from __future__ import annotations
 import logging
 import os
 import shutil
+import socket
 from collections.abc import Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -93,6 +94,14 @@ from pyicloud.exceptions import PyiCloudException, PyiCloudFailedLoginException
 # Canonical slug implementation lives in remote_state (dependency-light);
 # re-exported here so callers can import it from either module.
 from .remote_state import account_slug
+
+# pyicloud sets NO request timeouts anywhere; when Apple throttles a query it
+# TARPITS it (holds the connection open without responding), which left our
+# preview workers blocked in ssl.read forever (stack-dumped live,
+# 2026-08-24: frozen at "previews 0 / 2788"). requests passes timeout=None
+# to urllib3, whose sockets then honor this process-wide default -- a
+# blunt but complete safety net for every pyicloud call.
+socket.setdefaulttimeout(60)
 
 logger = logging.getLogger("maier.icloud")
 
@@ -269,8 +278,22 @@ class ICloudClient:
         `remote_id`, so re-seeing older items here is cheap and idempotent.
         """
         since_utc = _aware_utc(since) if since is not None else None
+        album = self._service.photos.all
         try:
-            for asset in self._service.photos.all:
+            # Empirically INVERTED naming (probed live against a real
+            # library, 2026-08-24): DirectionEnum.ASCENDING yields
+            # NEWEST-first; pyicloud's ALL_PHOTOS default (DESCENDING)
+            # yields oldest-first. Newest-first matters: the user's working
+            # range is almost always recent, so enumerating newest-first
+            # caches those assets -- and unblocks their preview fetches --
+            # in the first minute instead of the last.
+            from pyicloud.services.photos_cloudkit.constants import DirectionEnum
+
+            album._direction = DirectionEnum.ASCENDING
+        except Exception:
+            pass  # older/newer pyicloud internals: keep the default order
+        try:
+            for asset in album:
                 self._asset_cache[asset.id] = asset
                 remote_asset = _to_remote_asset(asset)
                 if since_utc is not None and remote_asset.captured_at <= since_utc:
