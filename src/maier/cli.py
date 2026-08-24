@@ -122,7 +122,7 @@ def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
 
     if use_window:
         server_thread = threading.Thread(
-            target=lambda: waitress.serve(application, host="127.0.0.1", port=port),
+            target=lambda: waitress.serve(application, host="127.0.0.1", port=port, threads=12),
             daemon=True,
         )
         server_thread.start()
@@ -142,7 +142,7 @@ def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
         threading.Timer(1.0, webbrowser.open, args=(url,)).start()
 
     try:
-        waitress.serve(application, host="127.0.0.1", port=port)
+        waitress.serve(application, host="127.0.0.1", port=port, threads=12)
     except KeyboardInterrupt:
         print("\nstopping")
     return 0

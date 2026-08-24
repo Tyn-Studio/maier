@@ -310,6 +310,32 @@ def test_preview_view_returns_jpeg_with_cache_headers(client):
 
 
 @pytest.mark.django_db
+def test_preview_view_placeholder_is_never_cached(client):
+    # A remote photo with no fetched preview serves the shared placeholder,
+    # which MUST NOT carry immutable caching -- the browser would pin gray
+    # squares forever even after the real preview lands (live finding,
+    # 2026-08-24).
+    photo = Photo.objects.create(
+        source=Photo.SOURCE_ICLOUD,
+        account="cachetest@example.com",
+        remote_id="cache-r1",
+        relative_path="@icloud/cachetest@example.com/cache-r1",
+        status=Photo.STATUS_OPTIONAL,
+        provenance="cachetest-example-com",
+        file_size=1,
+        file_mtime=0.0,
+        captured_at=_CAPTURED,
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+    )
+
+    response = client.get(reverse("preview", args=[photo.pk]))
+
+    assert response.status_code == 200
+    assert response["Cache-Control"] == "no-store"
+
+
+@pytest.mark.django_db
 def test_preview_view_404_for_unknown_pk(client):
     response = client.get(reverse("preview", args=[999999]))
     assert response.status_code == 404

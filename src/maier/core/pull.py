@@ -18,6 +18,7 @@ this module against fakes implementing the same duck-typed surface.
 from __future__ import annotations
 
 import threading
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -148,13 +149,23 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
         ]
         progress.total = progress.done + len(preview_ids)
 
-        for rid in preview_ids:
+        def _fetch_preview(rid: str) -> str | None:
             try:
                 dest = previews_module.remote_preview_dest(folder, client.account, rid)
                 client.download(rid, "medium", dest)
+                return None
             except Exception as exc:
-                progress.errors.append(f"{rid}: preview fetch failed: {exc}")
-            finally:
+                return f"{rid}: preview fetch failed: {exc}"
+
+        # Modest parallelism: serial fetching of a real library's preview
+        # backlog measured in hours (41k items, 2026-08-24). Four workers
+        # share the client's one requests.Session -- urllib3's pool handles
+        # concurrent use; failures are per-item and the next pull's backlog
+        # scan retries them.
+        with ThreadPoolExecutor(max_workers=4) as pool:
+            for error in pool.map(_fetch_preview, preview_ids):
+                if error is not None:
+                    progress.errors.append(error)
                 progress.done += 1
 
         # The cursor is an informational last-pull watermark (max capture

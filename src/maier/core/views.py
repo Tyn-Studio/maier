@@ -40,7 +40,14 @@ def preview(request, pk):
     photo = get_object_or_404(Photo, pk=pk)
     path = previews.preview_path(settings.WORKING_FOLDER, photo)
     response = FileResponse(path.open("rb"), content_type="image/jpeg")
-    response["Cache-Control"] = "public, max-age=31536000, immutable"
+    if path.name == previews._PLACEHOLDER_NAME:
+        # A placeholder is a *pending* preview (remote photo whose medium
+        # hasn't been fetched yet, RAW before exiftool, etc.) -- it must
+        # never be cached, or the browser pins gray squares forever even
+        # after the real preview lands (found live, 2026-08-24).
+        response["Cache-Control"] = "no-store"
+    else:
+        response["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 
