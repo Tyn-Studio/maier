@@ -30,6 +30,7 @@ dependencies = [
     "platformdirs",
     "whitenoise",
     "pywebview",
+    "pyicloud>=2.6",
 ]
 
 [project.urls]
