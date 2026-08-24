@@ -1,8 +1,18 @@
 """Background original-download worker (SPEC §18 rules 2-3, PLAN T17):
 selecting a remote (iCloud) photo enqueues its original for download into
-`selected/{account-slug}/...`; once it lands the Photo row converts to an
-ordinary local row (`source="local"`) and every further status change flows
-through the normal move engine (`core/moves.py` via `core/culling.py`).
+`selected/...`; once it lands the Photo row converts to an ordinary local
+row (`source="local"`) and every further status change flows through the
+normal move engine (`core/moves.py` via `core/culling.py`).
+
+PLAN T24 (CTO decision, 2026-08-24): `selected/` is flat, so the download
+destination is `selected/{filename}` directly -- no `{account-slug}/`
+subdir. `provenance` stays the account slug (a DB field, filterable in the
+UI) even though it no longer shapes the path. `Photo.original_path` is
+deliberately left empty for these rows (PLAN T24 rule 6): unflagging a
+downloaded iCloud photo falls to `moves._resolve_source_rel`'s last-resort
+rule, landing it at `{account-slug}/{filename}` in the root -- a sensible
+place to recreate on unflag, since there was never a real "original path"
+to restore for a photo that only ever existed remotely.
 
 The queue is DB-derived, not an in-memory list (crash-safe, matches
 scan.py/pull.py's own background-thread pattern): a "pending" item is any
@@ -120,7 +130,11 @@ def _remote_filename(photo: Photo) -> str:
 
 
 def _dest_for(folder: Path, photo: Photo, slug: str) -> Path:
-    dest_dir = folder / "selected" / slug
+    # PLAN T24 (CTO decision): `selected/` is flat -- no `{slug}` subdir.
+    # `slug` is still threaded through (used for the DB `provenance` field
+    # in `_convert_to_local` and for the account-scoped staging dir) even
+    # though it no longer shapes the destination path.
+    dest_dir = folder / "selected"
     # `moves._unique_path` is a private helper (flagged, per brief): reused
     # here rather than duplicated so the collision-suffix rule (SPEC §3/§4:
     # " (n)" before the extension, never overwrite) stays a single
@@ -282,7 +296,8 @@ def _download_one(folder: Path, client, photo: Photo, progress: DownloadProgress
     filename = _remote_filename(photo)
 
     if Path(filename).suffix.lower() in _HEIC_EXTENSIONS:
-        dest_dir = folder / "selected" / slug
+        # PLAN T24: flat selected/, no `{slug}` subdir (see `_dest_for`).
+        dest_dir = folder / "selected"
         dest = _download_and_convert_heic(folder, client, photo, filename, dest_dir, progress)
         if dest is None:
             return  # download itself failed; error already recorded

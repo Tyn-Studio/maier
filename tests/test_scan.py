@@ -59,7 +59,10 @@ EXPECTED_PATHS = {
     "apple-luis/IMG_0002.jpg",
     "lightroom/IMG_0003.jpg",
     "IMG_0004.jpg",
-    "selected/apple-luis/IMG_0005.jpg",
+    # T24 CTO follow-up: scan() flattens this pre-existing mirrored
+    # selected/apple-luis/IMG_0005.jpg to flat selected/IMG_0005.jpg before
+    # indexing (moves.flatten_selected, called at the start of scan()).
+    "selected/IMG_0005.jpg",
     "selected/IMG_0006.jpg",
     "rejected/lightroom/IMG_0007.jpg",
 }
@@ -85,8 +88,10 @@ def test_scan_indexes_fixture_tree(tmp_path):
     assert photos["IMG_0004.jpg"].status == Photo.STATUS_OPTIONAL
     assert photos["IMG_0004.jpg"].provenance == ""
 
-    assert photos["selected/apple-luis/IMG_0005.jpg"].status == Photo.STATUS_SELECTED
-    assert photos["selected/apple-luis/IMG_0005.jpg"].provenance == "apple-luis"
+    assert photos["selected/IMG_0005.jpg"].status == Photo.STATUS_SELECTED
+    # Flattened -- provenance derives to "" from the new flat location
+    # itself (no DB row/original_path existed yet to carry "apple-luis").
+    assert photos["selected/IMG_0005.jpg"].provenance == ""
 
     assert photos["selected/IMG_0006.jpg"].status == Photo.STATUS_SELECTED
     assert photos["selected/IMG_0006.jpg"].provenance == ""

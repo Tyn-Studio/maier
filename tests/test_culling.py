@@ -225,20 +225,21 @@ def test_select_downloads_original_and_converts_row_to_local(tmp_path, monkeypat
 
     culling.apply_status_any(tmp_path, photo, "selected")
 
+    # T24 CTO decision: selected/ is flat -- no {slug}/ subdir.
     slug = remote_state.account_slug("luis@example.com")
-    dest = tmp_path / "selected" / slug / "IMG_0001.jpg"
+    dest = tmp_path / "selected" / "IMG_0001.jpg"
     assert dest.exists()
     assert dest.read_bytes() == b"the-original-bytes"
 
     photo.refresh_from_db()
     assert photo.source == Photo.SOURCE_LOCAL
-    assert photo.relative_path == f"selected/{slug}/IMG_0001.jpg"
+    assert photo.relative_path == "selected/IMG_0001.jpg"
     assert photo.provenance == slug
     assert photo.sha256 is None
     assert photo.file_size == len(b"the-original-bytes")
 
     state = remote_state.load_state(tmp_path, "luis@example.com")
-    assert state.downloaded == {"r1": f"selected/{slug}/IMG_0001.jpg"}
+    assert state.downloaded == {"r1": "selected/IMG_0001.jpg"}
     assert "r1" not in state.decisions
 
 
@@ -253,18 +254,20 @@ def test_downloaded_photo_unflag_then_reselect_moves_file_no_redownload(tmp_path
 
     # Unflag: the row is local now, so this routes through phaseb -- an
     # ordinary move, never a delete, never a re-download (SPEC §18 rule 3).
+    # T24 rule 6: original_path was never set for a downloaded iCloud row,
+    # so unflag falls to the last-resort rule -- {provenance-slug}/{name}.
     updated = culling.apply_status_any(tmp_path, photo, "optional")
 
     assert updated.status == "optional"
     assert (tmp_path / slug / "IMG_0001.jpg").exists()
-    assert not (tmp_path / "selected" / slug / "IMG_0001.jpg").exists()
+    assert not (tmp_path / "selected" / "IMG_0001.jpg").exists()
     assert client.calls == [("r1", "original")]
 
-    # Re-select: moves back, still no re-download.
+    # Re-select: moves back (flat again), still no re-download.
     updated2 = culling.apply_status_any(tmp_path, updated, "selected")
 
     assert updated2.status == "selected"
-    assert (tmp_path / "selected" / slug / "IMG_0001.jpg").exists()
+    assert (tmp_path / "selected" / "IMG_0001.jpg").exists()
     assert not (tmp_path / slug / "IMG_0001.jpg").exists()
     assert client.calls == [("r1", "original")]
 

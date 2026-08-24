@@ -199,13 +199,13 @@ def test_enqueue_original_downloads_and_converts_row_to_local(tmp_path, monkeypa
 
     photo.refresh_from_db()
     slug = remote_state.account_slug("luis@example.com")
-    assert photo.relative_path == f"selected/{slug}/a.jpg"
+    assert photo.relative_path == "selected/a.jpg"
     assert photo.provenance == slug
     assert photo.sha256 is None
-    assert (tmp_path / "selected" / slug / "a.jpg").exists()
+    assert (tmp_path / "selected" / "a.jpg").exists()
 
     state = remote_state.load_state(tmp_path, "luis@example.com")
-    assert state.downloaded == {"r1": f"selected/{slug}/a.jpg"}
+    assert state.downloaded == {"r1": "selected/a.jpg"}
 
 
 @pytest.mark.django_db(transaction=True)
@@ -219,8 +219,7 @@ def test_worker_falls_back_to_remote_id_filename_when_none_recorded(tmp_path, mo
     downloads._worker_thread.join(timeout=5)
 
     photo.refresh_from_db()
-    slug = remote_state.account_slug("luis@example.com")
-    assert photo.relative_path == f"selected/{slug}/r1.jpg"
+    assert photo.relative_path == "selected/r1.jpg"
 
 
 # --- download failure + retry -----------------------------------------------
@@ -303,13 +302,12 @@ def test_collision_same_filename_gets_numeric_suffix(tmp_path, monkeypatch):
     )
     downloads._worker_thread.join(timeout=5)
 
-    slug = remote_state.account_slug("luis@example.com")
     p1.refresh_from_db()
     p2.refresh_from_db()
-    assert p1.relative_path == f"selected/{slug}/dup.jpg"
-    assert p2.relative_path == f"selected/{slug}/dup (1).jpg"
-    assert (tmp_path / "selected" / slug / "dup.jpg").exists()
-    assert (tmp_path / "selected" / slug / "dup (1).jpg").exists()
+    assert p1.relative_path == "selected/dup.jpg"
+    assert p2.relative_path == "selected/dup (1).jpg"
+    assert (tmp_path / "selected" / "dup.jpg").exists()
+    assert (tmp_path / "selected" / "dup (1).jpg").exists()
 
 
 # --- start_worker: single-flight --------------------------------------------
@@ -395,7 +393,7 @@ def test_pull_does_not_resurrect_row_after_successful_download(tmp_path):
 
     slug = remote_state.account_slug("luis@example.com")
     local_photo = Photo.objects.create(
-        relative_path=f"selected/{slug}/a.jpg",
+        relative_path="selected/a.jpg",
         status=Photo.STATUS_SELECTED,
         provenance=slug,
         file_size=1000,
@@ -409,9 +407,7 @@ def test_pull_does_not_resurrect_row_after_successful_download(tmp_path):
     )
     remote_state.save_state(
         tmp_path,
-        remote_state.AccountState(
-            account="luis@example.com", downloaded={"r1": f"selected/{slug}/a.jpg"}
-        ),
+        remote_state.AccountState(account="luis@example.com", downloaded={"r1": "selected/a.jpg"}),
     )
     client = _FakePullClient("luis@example.com", [_FakeAsset("r1", "a.jpg", _CAPTURED, 1000)])
 
@@ -420,7 +416,7 @@ def test_pull_does_not_resurrect_row_after_successful_download(tmp_path):
     assert Photo.objects.filter(pk=local_photo.pk).count() == 1
     local_photo.refresh_from_db()
     assert local_photo.source == Photo.SOURCE_LOCAL
-    assert local_photo.relative_path == f"selected/{slug}/a.jpg"
+    assert local_photo.relative_path == "selected/a.jpg"
 
 
 # --- T20: HEIC -> full-res JPEG/PNG conversion, EXIF preserved --------------
@@ -438,9 +434,8 @@ def test_heic_select_converts_to_full_res_jpeg_with_exif_preserved(tmp_path, mon
     downloads._worker_thread.join(timeout=5)
 
     photo.refresh_from_db()
-    slug = remote_state.account_slug("luis@example.com")
-    dest = tmp_path / "selected" / slug / "IMG_0001.jpg"
-    assert photo.relative_path == f"selected/{slug}/IMG_0001.jpg"
+    dest = tmp_path / "selected" / "IMG_0001.jpg"
+    assert photo.relative_path == "selected/IMG_0001.jpg"
     assert dest.exists()
     assert dest.read_bytes()[:2] == b"\xff\xd8"  # JPEG magic bytes
 
@@ -450,7 +445,7 @@ def test_heic_select_converts_to_full_res_jpeg_with_exif_preserved(tmp_path, mon
         assert img.getexif().get(0x9003) == "2021:05:06 07:08:09"
 
     state = remote_state.load_state(tmp_path, "luis@example.com")
-    assert state.downloaded == {"r1": f"selected/{slug}/IMG_0001.jpg"}
+    assert state.downloaded == {"r1": "selected/IMG_0001.jpg"}
     assert downloads._last_progress is not None
     assert downloads._last_progress.errors == []
 
@@ -466,8 +461,7 @@ def test_heic_select_is_case_insensitive_on_extension(tmp_path, monkeypatch):
     downloads._worker_thread.join(timeout=5)
 
     photo.refresh_from_db()
-    slug = remote_state.account_slug("luis@example.com")
-    assert photo.relative_path == f"selected/{slug}/img.jpg"
+    assert photo.relative_path == "selected/img.jpg"
 
 
 @pytest.mark.django_db(transaction=True)
@@ -482,9 +476,8 @@ def test_heic_alpha_converts_to_png(tmp_path, monkeypatch):
     downloads._worker_thread.join(timeout=5)
 
     photo.refresh_from_db()
-    slug = remote_state.account_slug("luis@example.com")
-    dest = tmp_path / "selected" / slug / "alpha.png"
-    assert photo.relative_path == f"selected/{slug}/alpha.png"
+    dest = tmp_path / "selected" / "alpha.png"
+    assert photo.relative_path == "selected/alpha.png"
     assert dest.exists()
     assert dest.read_bytes()[:8] == b"\x89PNG\r\n\x1a\n"
     with Image.open(dest) as img:
@@ -505,9 +498,8 @@ def test_heic_conversion_failure_falls_back_to_original_heic(tmp_path, monkeypat
     downloads._worker_thread.join(timeout=5)
 
     photo.refresh_from_db()
-    slug = remote_state.account_slug("luis@example.com")
-    dest = tmp_path / "selected" / slug / "broken.heic"
-    assert photo.relative_path == f"selected/{slug}/broken.heic"
+    dest = tmp_path / "selected" / "broken.heic"
+    assert photo.relative_path == "selected/broken.heic"
     assert dest.exists()
     assert dest.read_bytes() == garbage
 
@@ -528,9 +520,8 @@ def test_non_heic_original_download_is_unconverted(tmp_path, monkeypatch):
     downloads._worker_thread.join(timeout=5)
 
     photo.refresh_from_db()
-    slug = remote_state.account_slug("luis@example.com")
-    dest = tmp_path / "selected" / slug / "plain.jpg"
-    assert photo.relative_path == f"selected/{slug}/plain.jpg"
+    dest = tmp_path / "selected" / "plain.jpg"
+    assert photo.relative_path == "selected/plain.jpg"
     assert dest.read_bytes() == b"plain-jpeg-bytes"
 
 
@@ -549,8 +540,8 @@ def test_live_photo_downloads_video_creates_row_sets_path_hides_companion(tmp_pa
 
     photo.refresh_from_db()
     slug = remote_state.account_slug("luis@example.com")
-    assert photo.live_photo_video_path == f"selected/{slug}/IMG_0002.mov"
-    video_path = tmp_path / "selected" / slug / "IMG_0002.mov"
+    assert photo.live_photo_video_path == "selected/IMG_0002.mov"
+    video_path = tmp_path / "selected" / "IMG_0002.mov"
     assert video_path.exists()
     assert video_path.read_bytes() == client.live_payload
     assert client.live_calls == ["r1"]
@@ -580,9 +571,8 @@ def test_live_photo_video_failure_records_error_still_image_intact(tmp_path, mon
     downloads._worker_thread.join(timeout=5)
 
     photo.refresh_from_db()
-    slug = remote_state.account_slug("luis@example.com")
     assert not photo.live_photo_video_path
-    assert (tmp_path / "selected" / slug / "IMG_0003.jpg").exists()
+    assert (tmp_path / "selected" / "IMG_0003.jpg").exists()
 
     assert downloads._last_progress is not None
     assert any(
@@ -603,8 +593,7 @@ def test_non_live_photo_never_calls_download_live_video_write_path(tmp_path, mon
     photo.refresh_from_db()
     assert not photo.live_photo_video_path
     assert client.live_calls == ["r1"]  # called (best-effort) but wrote nothing
-    slug = remote_state.account_slug("luis@example.com")
-    assert not (tmp_path / "selected" / slug / "plain.mov").exists()
+    assert not (tmp_path / "selected" / "plain.mov").exists()
 
 
 @pytest.mark.django_db(transaction=True)
@@ -619,17 +608,17 @@ def test_unflag_round_trip_moves_converted_jpg_and_mov_companion(tmp_path, monke
 
     photo.refresh_from_db()
     slug = remote_state.account_slug("luis@example.com")
-    assert photo.relative_path == f"selected/{slug}/IMG_0004.jpg"
-    assert photo.live_photo_video_path == f"selected/{slug}/IMG_0004.mov"
+    assert photo.relative_path == "selected/IMG_0004.jpg"
+    assert photo.live_photo_video_path == "selected/IMG_0004.mov"
 
     moves.apply_status(tmp_path, photo, Photo.STATUS_OPTIONAL)
 
     assert photo.relative_path == f"{slug}/IMG_0004.jpg"
     assert (tmp_path / slug / "IMG_0004.jpg").exists()
-    assert not (tmp_path / "selected" / slug / "IMG_0004.jpg").exists()
+    assert not (tmp_path / "selected" / "IMG_0004.jpg").exists()
     assert photo.live_photo_video_path == f"{slug}/IMG_0004.mov"
     assert (tmp_path / slug / "IMG_0004.mov").exists()
-    assert not (tmp_path / "selected" / slug / "IMG_0004.mov").exists()
+    assert not (tmp_path / "selected" / "IMG_0004.mov").exists()
 
     companion = Photo.objects.get(relative_path=f"{slug}/IMG_0004.mov")
     assert companion.status == Photo.STATUS_OPTIONAL

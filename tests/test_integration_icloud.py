@@ -245,7 +245,9 @@ def test_full_remote_cull_loop_only_selected_originals_land_on_disk(client, monk
     state = remote_state.load_state(settings.WORKING_FOLDER, account)
     assert state.decisions == {"r_reject": "rejected"}
 
-    # --- select: async original download lands at selected/{slug}/{name} --
+    # --- select: async original download lands flat at selected/{name} ----
+    # (T24 CTO decision: selected/ is flat, no {slug}/ subdir -- provenance
+    # is still the account slug, just as a DB field now, not a path segment)
     monkeypatch.setattr(downloads_module, "_client_for_account", lambda acct: fake_client)
     before_select = _snapshot(settings.WORKING_FOLDER)
     response = client.post(
@@ -262,19 +264,27 @@ def test_full_remote_cull_loop_only_selected_originals_land_on_disk(client, monk
 
     photo_select.refresh_from_db()
     assert photo_select.source == Photo.SOURCE_LOCAL
-    assert photo_select.relative_path == f"selected/{slug}/r_select.jpg"
-    dest = settings.WORKING_FOLDER / "selected" / slug / "r_select.jpg"
+    assert photo_select.relative_path == "selected/r_select.jpg"
+    assert photo_select.provenance == slug
+    dest = settings.WORKING_FOLDER / "selected" / "r_select.jpg"
     assert dest.exists()
 
     after_select = _snapshot(settings.WORKING_FOLDER)
     # SPEC §18 acceptance core: the ONLY new file anywhere is the selected
     # original -- nothing else materialized for the rejected photo, and the
     # state file's own modification never shows up as a "new" path.
-    assert after_select - before_select == {f"selected/{slug}/r_select.jpg"}
+    assert after_select - before_select == {"selected/r_select.jpg"}
 
     # --- 3. only selected originals on disk --------------------------------
-    selected_dir = settings.WORKING_FOLDER / "selected" / slug
-    assert [p.name for p in selected_dir.iterdir()] == ["r_select.jpg"]
+    # T24 CTO decision: selected/ is flat and shared across the whole test
+    # session's WORKING_FOLDER (see test_integration.py's own docstring) --
+    # other tests' own selects can legitimately share this directory now
+    # (no more per-account/per-provenance subfolder isolation), so check
+    # presence/absence of this test's own files rather than an exact
+    # directory listing.
+    selected_dir = settings.WORKING_FOLDER / "selected"
+    assert (selected_dir / "r_select.jpg").exists()
+    assert not (selected_dir / "r_reject.jpg").exists()
 
     # grid?status=selected shows the downloaded photo
     response = client.get(reverse("grid"), {"status": "selected"})

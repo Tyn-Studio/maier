@@ -41,6 +41,14 @@ class Photo(models.Model):
     status = models.CharField(
         max_length=16, choices=STATUS_CHOICES, default=STATUS_OPTIONAL, db_index=True
     )
+    # T24: `selected/` is flat (no mirrored substructure), so its location
+    # alone can't recover a photo's pre-select path for unflag/reject-from-
+    # selected. Set once by `core/moves.apply_status` whenever a photo moves
+    # FROM a non-status location (never overwritten after that -- stable
+    # round trips per PLAN T24 rule 4). "" for photos that have never left a
+    # non-status location, and for iCloud downloads (PLAN T24 rule 6 --
+    # deliberately left empty, see `core/downloads.py`).
+    original_path = models.CharField(max_length=4096, blank=True, default="")
     # first non-status path segment, "" for root files
     provenance = models.CharField(max_length=255, blank=True, db_index=True)
     file_size = models.BigIntegerField()

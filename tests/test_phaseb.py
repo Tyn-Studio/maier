@@ -462,7 +462,9 @@ def test_apply_status_to_group_rejects_other_members(tmp_path):
     updated = apply_status_to_group(tmp_path, rep, Photo.STATUS_SELECTED)
 
     assert updated.status == Photo.STATUS_SELECTED
-    assert (tmp_path / "selected/a/one.jpg").exists()
+    # T24 CTO decision: selected/ is flat -- rejected/ (the OTHER member,
+    # never touched by the flat-select change) stays mirrored, unchanged.
+    assert (tmp_path / "selected/one.jpg").exists()
 
     other.refresh_from_db()
     assert other.status == Photo.STATUS_REJECTED
@@ -754,18 +756,20 @@ def test_live_photo_pairing_survives_select_round_trip(tmp_path):
     assert image.live_photo_video_path == "a/IMG_010.mov"
     video = Photo.objects.get(relative_path="a/IMG_010.mov")
 
+    # T24 CTO decision: selected/ is flat -- the companion follows the image
+    # beside it, still flat (no mirrored subfolder either).
     moves.apply_status(tmp_path, image, Photo.STATUS_SELECTED)
     image.refresh_from_db()
-    assert image.relative_path == "selected/a/IMG_010.jpg"
-    assert image.live_photo_video_path == "selected/a/IMG_010.mov"
-    assert (tmp_path / "selected/a/IMG_010.mov").exists()
+    assert image.relative_path == "selected/IMG_010.jpg"
+    assert image.live_photo_video_path == "selected/IMG_010.mov"
+    assert (tmp_path / "selected/IMG_010.mov").exists()
     assert not (tmp_path / "a/IMG_010.mov").exists()
 
     # a rescan reconciles the companion's own row to its new location (same
     # size+mtime move-reconciliation scan.py already implements)
     scan(tmp_path, ScanProgress())
     video.refresh_from_db()
-    assert video.relative_path == "selected/a/IMG_010.mov"
+    assert video.relative_path == "selected/IMG_010.mov"
 
     visible = set(queries_module.filtered_photos({}).values_list("pk", flat=True))
     assert image.pk in visible

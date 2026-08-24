@@ -43,6 +43,10 @@ def test_index_matches_filesystem(tmp_path):
         "apple-luis/IMG_0002.jpg": {"datetime_original": "2025:06:02 11:00:00"},
         "lightroom/IMG_0003.jpg": {"datetime_original": "2025:06:03 12:00:00"},
         "IMG_0004.jpg": {"datetime_original": "2025:06:04 13:00:00"},
+        # T24 CTO follow-up: scan() flattens a legacy mirrored selected/
+        # tree before walking, so this pre-existing mirrored file lands (and
+        # is indexed) at flat "selected/IMG_0005.jpg", not the path it's
+        # built at here -- see the assertions below.
         "selected/apple-luis/IMG_0005.jpg": {"datetime_original": "2025:06:05 14:00:00"},
         "selected/IMG_0006.jpg": {"datetime_original": "2025:06:06 15:00:00"},
         "rejected/lightroom/IMG_0007.jpg": {"datetime_original": "2025:06:07 16:00:00"},
@@ -63,7 +67,13 @@ def test_index_matches_filesystem(tmp_path):
     progress = ScanProgress()
     scan(tmp_path, progress)
 
-    expected_media_paths = {p for p in spec if Path(p).suffix.lower() != ".txt"}
+    # scan() flattens selected/apple-luis/IMG_0005.jpg to selected/IMG_0005.jpg
+    # before indexing (T24 CTO follow-up) -- adjust the expected path set.
+    expected_media_paths = {
+        "selected/IMG_0005.jpg" if p == "selected/apple-luis/IMG_0005.jpg" else p
+        for p in spec
+        if Path(p).suffix.lower() != ".txt"
+    }
 
     assert progress.finished is True
     assert progress.errors == []
@@ -81,8 +91,13 @@ def test_index_matches_filesystem(tmp_path):
     assert photos["IMG_0004.jpg"].status == Photo.STATUS_OPTIONAL
     assert photos["IMG_0004.jpg"].provenance == ""
 
-    assert photos["selected/apple-luis/IMG_0005.jpg"].status == Photo.STATUS_SELECTED
-    assert photos["selected/apple-luis/IMG_0005.jpg"].provenance == "apple-luis"
+    # Flattened: provenance derives to "" from the new flat location itself
+    # (scan._status_and_provenance, unchanged) -- the original "apple-luis"
+    # provenance isn't recoverable from location alone once flattened
+    # without ever having gone through moves.apply_status (no DB row
+    # existed yet to carry an original_path).
+    assert photos["selected/IMG_0005.jpg"].status == Photo.STATUS_SELECTED
+    assert photos["selected/IMG_0005.jpg"].provenance == ""
 
     assert photos["selected/IMG_0006.jpg"].status == Photo.STATUS_SELECTED
     assert photos["selected/IMG_0006.jpg"].provenance == ""
@@ -120,7 +135,8 @@ def test_cull_via_views_moves_file_then_unflag_restores(client):
 
     photo = Photo.objects.get(relative_path=rel)
     old_path = settings.WORKING_FOLDER / rel
-    new_path = settings.WORKING_FOLDER / f"selected/{unique}/apple-luis/IMG_0001.jpg"
+    # T24 CTO decision: selected/ is flat -- no mirrored provenance subpath.
+    new_path = settings.WORKING_FOLDER / "selected/IMG_0001.jpg"
 
     response = client.post(
         reverse("set-status", args=[photo.pk]),
@@ -137,7 +153,7 @@ def test_cull_via_views_moves_file_then_unflag_restores(client):
 
     photo.refresh_from_db()
     assert photo.status == "selected"
-    assert photo.relative_path == f"selected/{unique}/apple-luis/IMG_0001.jpg"
+    assert photo.relative_path == "selected/IMG_0001.jpg"
 
     # unflag: status=optional restores the original path on disk
     response = client.post(
@@ -175,8 +191,10 @@ def test_rescan_converges_after_external_moves(tmp_path):
     before_ids = {p.relative_path: p.id for p in Photo.objects.all()}
 
     # Simulate Finder: user drags apple-luis/IMG_0001.jpg into selected/,
-    # mirroring the source substructure, and drags rejected/lightroom's
-    # photo back out to its original root location -- both outside the app.
+    # mirroring the source substructure (as a pre-T24 user still might --
+    # scan()'s flatten_selected step converges this to flat on the very
+    # next scan, see below), and drags rejected/lightroom's photo back out
+    # to its original root location -- both outside the app.
     selected_dest = tmp_path / "selected" / "apple-luis" / "IMG_0001.jpg"
     selected_dest.parent.mkdir(parents=True)
     shutil.move(str(tmp_path / "apple-luis" / "IMG_0001.jpg"), str(selected_dest))
@@ -186,23 +204,68 @@ def test_rescan_converges_after_external_moves(tmp_path):
 
     scan(tmp_path, ScanProgress())
 
+    # T24 CTO follow-up: this scan's own flatten_selected step (run before
+    # the walk) moves selected/apple-luis/IMG_0001.jpg -> selected/
+    # IMG_0001.jpg on disk *before* the DB has a row at the mirrored path
+    # to match against, so the (size, mtime) walk-reconciliation below (not
+    # flatten_selected's own row update) is what re-links it -- provenance
+    # derives to "" from the new flat location, same as any flat select.
     photos = {p.relative_path: p for p in Photo.objects.all()}
     assert set(photos) == {
-        "selected/apple-luis/IMG_0001.jpg",
+        "selected/IMG_0001.jpg",
         "lightroom/IMG_0002.jpg",
         "lightroom/IMG_0003.jpg",
     }
     assert Photo.objects.count() == 3
 
-    assert photos["selected/apple-luis/IMG_0001.jpg"].status == Photo.STATUS_SELECTED
-    assert photos["selected/apple-luis/IMG_0001.jpg"].provenance == "apple-luis"
+    assert photos["selected/IMG_0001.jpg"].status == Photo.STATUS_SELECTED
+    assert photos["selected/IMG_0001.jpg"].provenance == ""
     assert photos["lightroom/IMG_0002.jpg"].status == Photo.STATUS_OPTIONAL
     assert photos["lightroom/IMG_0002.jpg"].provenance == "lightroom"
 
     # (size, mtime) reconciliation preserved row identity across the move --
     # no duplicate rows, no re-read of capture metadata.
-    assert photos["selected/apple-luis/IMG_0001.jpg"].id == before_ids["apple-luis/IMG_0001.jpg"]
+    assert photos["selected/IMG_0001.jpg"].id == before_ids["apple-luis/IMG_0001.jpg"]
     assert photos["lightroom/IMG_0002.jpg"].id == before_ids["rejected/lightroom/IMG_0002.jpg"]
+
+
+# --- 3b. scan() flattens a legacy mirrored selected/ tree on first open ---
+
+
+@pytest.mark.django_db
+def test_scan_flattens_legacy_mirrored_selected_tree_on_first_open(tmp_path):
+    # A folder that already has a pre-T24 (or pre-sorted) mirrored
+    # selected/ layout before the app has ever opened it at all -- no DB
+    # rows exist yet, so this exercises flatten_selected's "no matching row"
+    # path (filesystem-first) together with scan()'s own indexing pass.
+    spec = {
+        "selected/apple-luis/IMG_0001.jpg": {"datetime_original": "2025:06:01 10:00:00"},
+        "selected/lightroom/IMG_0002.jpg": {"datetime_original": "2025:06:02 11:00:00"},
+        "rejected/apple-luis/IMG_0003.jpg": {"datetime_original": "2025:06:03 12:00:00"},
+    }
+    build_fixture_folder(tmp_path, spec)
+
+    progress = ScanProgress()
+    scan(tmp_path, progress)
+
+    assert progress.errors == []
+    assert not (tmp_path / "selected/apple-luis").exists()
+    assert not (tmp_path / "selected/lightroom").exists()
+    assert (tmp_path / "selected/IMG_0001.jpg").exists()
+    assert (tmp_path / "selected/IMG_0002.jpg").exists()
+    # rejected/ is untouched -- still mirrored (T24 rule 2).
+    assert (tmp_path / "rejected/apple-luis/IMG_0003.jpg").exists()
+
+    photos = {p.relative_path: p for p in Photo.objects.all()}
+    assert set(photos) == {
+        "selected/IMG_0001.jpg",
+        "selected/IMG_0002.jpg",
+        "rejected/apple-luis/IMG_0003.jpg",
+    }
+    assert photos["selected/IMG_0001.jpg"].status == Photo.STATUS_SELECTED
+    assert photos["selected/IMG_0002.jpg"].status == Photo.STATUS_SELECTED
+    assert photos["rejected/apple-luis/IMG_0003.jpg"].status == Photo.STATUS_REJECTED
+    assert photos["rejected/apple-luis/IMG_0003.jpg"].provenance == "apple-luis"
 
 
 # --- 4. .maier/ cache loss -> state rebuilt from locations alone -------
@@ -219,7 +282,8 @@ def test_maier_cache_loss_state_rebuilt_from_locations(tmp_path):
 
     photo = Photo.objects.get(relative_path="apple-luis/IMG_0001.jpg")
     moves.apply_status(tmp_path, photo, "selected")
-    assert (tmp_path / "selected/apple-luis/IMG_0001.jpg").exists()
+    # T24 CTO decision: selected/ is flat.
+    assert (tmp_path / "selected/IMG_0001.jpg").exists()
 
     # Stand-in for "the user deletes .maier/": we can't actually delete the
     # on-disk sqlite3 file here, since it's the live connection this whole
@@ -235,12 +299,16 @@ def test_maier_cache_loss_state_rebuilt_from_locations(tmp_path):
     assert progress.errors == []
     photos = {p.relative_path: p for p in Photo.objects.all()}
     assert set(photos) == {
-        "selected/apple-luis/IMG_0001.jpg",
+        "selected/IMG_0001.jpg",
         "lightroom/IMG_0002.jpg",
     }
     assert Photo.objects.count() == 2
-    assert photos["selected/apple-luis/IMG_0001.jpg"].status == Photo.STATUS_SELECTED
-    assert photos["selected/apple-luis/IMG_0001.jpg"].provenance == "apple-luis"
+    assert photos["selected/IMG_0001.jpg"].status == Photo.STATUS_SELECTED
+    # Accepted T24 degradation: a flat select's origin subfolder can't be
+    # recovered from location alone once its DB row (and original_path) is
+    # gone -- provenance derives to "" from the flat location itself, same
+    # as `moves._resolve_source_rel`'s documented cache-loss fallback.
+    assert photos["selected/IMG_0001.jpg"].provenance == ""
     assert photos["lightroom/IMG_0002.jpg"].status == Photo.STATUS_OPTIONAL
 
 

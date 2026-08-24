@@ -12,6 +12,7 @@ from pathlib import Path
 
 from django.db import connection
 
+from . import moves
 from .metadata import capture_datetime
 from .models import Photo
 
@@ -86,6 +87,13 @@ def _walk_candidates(folder: Path) -> list[Path]:
 def scan(folder: Path, progress: ScanProgress) -> None:
     folder = Path(folder)
     try:
+        # PLAN T24 (CTO follow-up, 2026-08-24): converge any legacy
+        # mirrored `selected/` tree to the flat layout before walking, so
+        # every scan (including the very first one on a folder that already
+        # has pre-sorted `selected/<source>/...` subfolders) indexes the
+        # flat layout, not the mirrored one. Idempotent -- a no-op once
+        # already flat.
+        moves.flatten_selected(folder)
         candidates = _walk_candidates(folder)
         progress.total = len(candidates)
 
