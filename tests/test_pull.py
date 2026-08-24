@@ -86,7 +86,8 @@ def test_pull_creates_photo_rows_with_correct_fields(tmp_path):
 
     assert progress.finished is True
     assert progress.errors == []
-    assert progress.total == progress.done == 2
+    # Two-phase accounting: 2 metadata upserts + 2 preview fetches.
+    assert progress.total == progress.done == 4
 
     p1 = Photo.objects.get(account="luis@example.com", remote_id="r1")
     assert p1.source == Photo.SOURCE_ICLOUD
@@ -200,7 +201,7 @@ def test_incremental_second_pull_only_processes_unknown_remote_ids(tmp_path):
     pull_account(tmp_path, client, progress)
 
     assert client.since_calls == [None, None]
-    assert progress.total == progress.done == 1  # only r3
+    assert progress.total == progress.done == 2  # r3's metadata + r3's preview
     assert Photo.objects.count() == 3
     assert Photo.objects.filter(remote_id="r3").exists()
 
@@ -297,7 +298,7 @@ def test_per_asset_download_failure_recorded_but_pull_completes(tmp_path):
     pull_account(tmp_path, client, progress)
 
     assert progress.finished is True
-    assert progress.done == 2
+    assert progress.done == 4  # 2 metadata upserts + 2 preview attempts
     assert any("r1" in e for e in progress.errors)
 
     # The Photo row still got created (upsert happens before download).
@@ -324,19 +325,21 @@ def test_repull_is_idempotent_no_duplicate_rows(tmp_path):
     assert Photo.objects.filter(remote_id="r1").count() == 1
 
 
-# --- progress.total from materialized listing -------------------------------
+# --- two-phase progress accounting ------------------------------------------
 
 
 @pytest.mark.django_db
-def test_progress_total_set_from_materialized_listing(tmp_path):
+def test_progress_streams_metadata_then_counts_previews(tmp_path):
+    # Phase 1 streams metadata with total unknown (0); phase 2 sets total to
+    # metadata-done + preview backlog. Final: 3 upserts + 3 previews.
     assets = [_asset("r1", T0), _asset("r2", T1), _asset("r3", T2)]
     client = FakeClient("luis@example.com", [assets])
     progress = PullProgress()
 
     pull_account(tmp_path, client, progress)
 
-    assert progress.total == 3
-    assert progress.done == 3
+    assert progress.total == 6
+    assert progress.done == 6
 
 
 # --- background / single-flight ---------------------------------------------

@@ -377,8 +377,10 @@ def test_incremental_repull_only_processes_new_asset_decisions_intact():
 
     progress = _pull(settings.WORKING_FOLDER, fake_client)
 
-    assert progress.total == 1  # only r3 -- both previews already cached, no repairs
-    assert progress.done == 1
+    # Two-phase accounting: r3's metadata + r3's preview -- r1/r2 already
+    # known and their previews already cached, so no repairs.
+    assert progress.total == 2
+    assert progress.done == 2
     assert progress.errors == []
     assert Photo.objects.filter(account=account).count() == 3
     assert Photo.objects.filter(account=account, remote_id="r3").exists()

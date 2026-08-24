@@ -1460,7 +1460,7 @@ def test_t18_pull_status_in_flight_renders_progress_partial(client):
     try:
         response = client.get(reverse("pull-status"), {"account": email})
         body = response.content.decode()
-        assert "Pulling 2 / 5" in body
+        assert "Fetching previews 2 / 5" in body
         assert "load delay:2s" in body
     finally:
         pull_module._current_pulls.pop(email, None)

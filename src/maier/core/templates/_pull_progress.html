@@ -8,7 +8,11 @@ button, whose response includes a live poller for that account.
 {% if progress and not progress.finished %}
 <div id="pull-poller-{{ slug }}" hx-get="{% url 'pull-status' %}?account={{ account|urlencode }}" hx-trigger="load delay:2s" hx-target="this" hx-swap="outerHTML">
   <div class="banner indexing">
-    Pulling {{ progress.done }} / {{ progress.total }}{% if progress.errors %} ({{ progress.errors|length }} errors){% endif %}
+    {% if progress.total %}
+    Fetching previews {{ progress.done }} / {{ progress.total }}{% if progress.errors %} ({{ progress.errors|length }} errors){% endif %}
+    {% else %}
+    Discovering library&hellip; {{ progress.done }} photos found{% if progress.errors %} ({{ progress.errors|length }} errors){% endif %}
+    {% endif %}
   </div>
 </div>
 {% else %}

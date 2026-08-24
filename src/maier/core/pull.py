@@ -21,7 +21,7 @@ import threading
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING
 
 from django.db import connection
 
@@ -90,10 +90,6 @@ def _process_asset(
         },
     )
 
-    dest = previews_module.remote_preview_dest(folder, client.account, asset.remote_id)
-    if not dest.exists():
-        client.download(asset.remote_id, "medium", dest)
-
 
 def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> None:
     folder = Path(folder)
@@ -107,59 +103,57 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
             .values_list("remote_id", flat=True)
         )
 
-        assets: list[Any] = []
+        # Phase 1 -- STREAMING metadata: rows are upserted while the
+        # enumeration is still running, so the timeline fills progressively
+        # (with placeholder previews) instead of staying empty for the many
+        # minutes a large library takes to enumerate (real-library finding,
+        # 2026-08-24: ~30 assets/s, 10k+ items). `progress.total` stays 0
+        # during this phase -- the library size is unknown until the
+        # enumeration ends; the banner shows a plain running count.
+        #
+        # Deliberately NOT filtered by the cursor: iCloud libraries gain OLD
+        # photos later (device syncs, imports), and a capture-date filter
+        # would hide those forever. The web API enumerates all metadata
+        # regardless (no server-side date filter). "Incremental" per SPEC
+        # §18 = skip already-known remote_ids and re-downloads.
         iteration_failed = False
+        max_captured_at: datetime | None = state.cursor
         try:
-            # Full metadata enumeration on every pull, deliberately NOT
-            # filtered by the cursor: iCloud libraries gain OLD photos later
-            # (device syncs, imports from other libraries), and a
-            # capture-date filter would hide those forever. The web API
-            # enumerates all metadata regardless (no server-side date
-            # filter), so this costs nothing extra. "Incremental" per SPEC
-            # §18 = skip already-known remote_ids and re-downloads.
             for asset in client.list_assets(since=None):
-                assets.append(asset)
+                if asset.remote_id in known_ids or asset.remote_id in state.downloaded:
+                    continue
+                try:
+                    _process_asset(folder, client, state, asset)
+                    known_ids.add(asset.remote_id)
+                    if max_captured_at is None or asset.captured_at > max_captured_at:
+                        max_captured_at = asset.captured_at
+                except Exception as exc:  # per-asset errors never abort the pull
+                    progress.errors.append(f"{asset.remote_id}: {exc}")
+                finally:
+                    progress.done += 1
         except Exception as exc:
             progress.errors.append(f"list_assets: {exc}")
             iteration_failed = True
 
-        new_assets = [
-            a
-            for a in assets
-            if a.remote_id not in known_ids and a.remote_id not in state.downloaded
-        ]
-
-        # Preview repair: rows from earlier pulls whose medium preview never
-        # landed (failed download, wiped .maier/ cache) get retried on
-        # every pull rather than staying placeholders forever.
-        repair_ids = [
+        # Phase 2 -- previews for every row that lacks one: both the rows
+        # just created and older rows whose fetch previously failed or whose
+        # .maier/ cache was wiped (the original "repair pass", now the sole
+        # preview path -- metadata streaming above never blocks on preview
+        # downloads). total becomes meaningful here: metadata done so far
+        # plus the known preview backlog.
+        preview_ids = [
             rid
             for rid in sorted(known_ids)
             if not previews_module.remote_preview_dest(folder, client.account, rid).exists()
         ]
+        progress.total = progress.done + len(preview_ids)
 
-        # Materialized up front (SPEC/PLAN: "metadata is smallish") so
-        # total/done are meaningful even though downloads happen per item.
-        progress.total = len(new_assets) + len(repair_ids)
-
-        max_captured_at: datetime | None = state.cursor
-
-        for asset in new_assets:
-            try:
-                _process_asset(folder, client, state, asset)
-                if max_captured_at is None or asset.captured_at > max_captured_at:
-                    max_captured_at = asset.captured_at
-            except Exception as exc:  # per-asset errors never abort the pull
-                progress.errors.append(f"{asset.remote_id}: {exc}")
-            finally:
-                progress.done += 1
-
-        for rid in repair_ids:
+        for rid in preview_ids:
             try:
                 dest = previews_module.remote_preview_dest(folder, client.account, rid)
                 client.download(rid, "medium", dest)
             except Exception as exc:
-                progress.errors.append(f"{rid}: preview refetch failed: {exc}")
+                progress.errors.append(f"{rid}: preview fetch failed: {exc}")
             finally:
                 progress.done += 1
 
