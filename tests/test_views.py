@@ -65,6 +65,24 @@ def _db_photo(relative_path: str, **overrides) -> Photo:
     return Photo.objects.create(relative_path=relative_path, **kwargs)
 
 
+@pytest.fixture(autouse=True)
+def _t29_default_working_range():
+    """T29 added a setup-wizard gate on `grid`: an unset working range now
+    redirects there instead of rendering the grid. Almost every test in this
+    file predates that gate and hits `grid` expecting a normal 200 -- give
+    each test an "everything" range up front (session-wide WORKING_FOLDER,
+    see `test_integration.py`'s docstring for why this persists across
+    tests) so they're unaffected. The handful of tests that specifically
+    exercise the gate/setup-wizard/range-scoping behavior below monkeypatch
+    `folder_settings.load_settings` or call `folder_settings.save_settings`
+    themselves to override this default for their own duration.
+    """
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(working_from="1970-01-01", working_to=""),
+    )
+
+
 # --- home -------------------------------------------------------------
 
 
@@ -2029,3 +2047,268 @@ def test_grid_hides_update_banner_when_absent(client, monkeypatch):
 
     body = response.content.decode()
     assert "update-available" not in body
+
+
+# --- setup wizard / working date range gate (PLAN T29) ----------------------
+
+
+@pytest.mark.django_db
+def test_grid_redirects_to_setup_when_working_range_unset(client, monkeypatch):
+    monkeypatch.setattr(
+        views_module.folder_settings,
+        "load_settings",
+        lambda folder: folder_settings.FolderSettings(),
+    )
+
+    response = client.get(reverse("grid"))
+
+    assert response.status_code == 302
+    assert response.url == reverse("setup")
+
+
+@pytest.mark.django_db
+def test_grid_no_redirect_when_working_range_set(client):
+    # Relies on the module's own autouse fixture above.
+    response = client.get(reverse("grid"))
+    assert response.status_code == 200
+
+
+@pytest.mark.django_db
+def test_other_pages_never_gated_by_working_range(client, monkeypatch):
+    monkeypatch.setattr(
+        views_module.folder_settings,
+        "load_settings",
+        lambda folder: folder_settings.FolderSettings(),
+    )
+
+    assert client.get(reverse("accounts")).status_code == 200
+    assert client.get(reverse("settings")).status_code == 200
+    assert client.get(reverse("healthz")).status_code == 200
+    assert client.get(reverse("setup")).status_code == 200
+
+
+@pytest.mark.django_db
+def test_grid_defaults_to_working_range_when_params_absent(client):
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(working_from="2025-06-01", working_to="2025-06-30"),
+    )
+    in_range = _db_photo("t_t29_default/in.jpg", captured_at=datetime(2025, 6, 14, tzinfo=UTC))
+    out_of_range = _db_photo("t_t29_default/out.jpg", captured_at=datetime(2025, 1, 1, tzinfo=UTC))
+
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert reverse("preview", args=[in_range.pk]) in body
+    assert reverse("preview", args=[out_of_range.pk]) not in body
+    assert response.context["filter_from"] == "2025-06-01"
+    assert response.context["filter_to"] == "2025-06-30"
+
+
+@pytest.mark.django_db
+def test_grid_explicit_param_overrides_working_range_default(client):
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(working_from="2025-06-01", working_to="2025-06-30"),
+    )
+    outside_default = _db_photo(
+        "t_t29_explicit/x.jpg", captured_at=datetime(2025, 1, 1, tzinfo=UTC)
+    )
+
+    response = client.get(reverse("grid"), {"from": "2025-01-01", "to": "2025-01-31"})
+
+    body = response.content.decode()
+    assert reverse("preview", args=[outside_default.pk]) in body
+    assert response.context["filter_from"] == "2025-01-01"
+    assert response.context["filter_to"] == "2025-01-31"
+
+
+@pytest.mark.django_db
+def test_grid_explicit_empty_param_wins_over_working_range_default(client):
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(working_from="2025-06-01", working_to="2025-06-30"),
+    )
+    outside_range = _db_photo("t_t29_cleared/x.jpg", captured_at=datetime(2020, 1, 1, tzinfo=UTC))
+
+    response = client.get(reverse("grid"), {"from": "", "to": ""})
+
+    body = response.content.decode()
+    assert reverse("preview", args=[outside_range.pk]) in body
+    assert response.context["filter_from"] == ""
+    assert response.context["filter_to"] == ""
+
+
+@pytest.mark.django_db
+def test_grid_shows_working_range_indicator(client):
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(working_from="2026-02-01", working_to="2026-03-17"),
+    )
+
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert "Working: 2026-02-01" in body
+    assert "2026-03-17" in body
+    assert f'href="{reverse("setup")}?step=2"' in body
+
+
+# --- setup wizard steps (PLAN T29) -------------------------------------------
+
+
+@pytest.mark.django_db
+def test_setup_shows_step1_when_no_accounts(client, monkeypatch):
+    monkeypatch.setattr(views_module.remote_state, "list_accounts", lambda folder: [])
+
+    response = client.get(reverse("setup"))
+
+    assert response.context["show_step1"] is True
+    assert "Step 1 of 2" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_setup_shows_step2_directly_when_accounts_exist(client, monkeypatch):
+    monkeypatch.setattr(
+        views_module.remote_state, "list_accounts", lambda folder: ["a@example.com"]
+    )
+
+    response = client.get(reverse("setup"))
+
+    assert response.context["show_step1"] is False
+    assert "Step 2 of 2" in response.content.decode()
+
+
+@pytest.mark.django_db
+def test_setup_step2_via_query_param_even_with_no_accounts(client, monkeypatch):
+    monkeypatch.setattr(views_module.remote_state, "list_accounts", lambda folder: [])
+
+    response = client.get(reverse("setup"), {"step": "2"})
+
+    assert response.context["show_step1"] is False
+
+
+@pytest.mark.django_db
+def test_setup_prefills_current_working_range(client, monkeypatch):
+    monkeypatch.setattr(
+        views_module.remote_state, "list_accounts", lambda folder: ["a@example.com"]
+    )
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(working_from="2026-02-01", working_to="2026-03-17"),
+    )
+
+    response = client.get(reverse("setup"))
+
+    body = response.content.decode()
+    assert 'value="2026-02-01"' in body
+    assert 'value="2026-03-17"' in body
+
+
+# --- setup-dates POST (PLAN T29) ---------------------------------------------
+
+
+@pytest.mark.django_db
+def test_setup_dates_get_not_allowed(client):
+    response = client.get(reverse("setup-dates"))
+    assert response.status_code == 405
+
+
+@pytest.mark.django_db
+def test_setup_dates_preset_everything_saves_sentinel_and_redirects_to_grid(client):
+    response = client.post(reverse("setup-dates"), {"preset": "everything"})
+
+    assert response.status_code == 302
+    assert response.url == reverse("grid")
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.working_from == "1970-01-01"
+    assert saved.working_to == ""
+
+
+@pytest.mark.django_db
+def test_setup_dates_custom_range_saves_given_values(client):
+    response = client.post(reverse("setup-dates"), {"from": "2026-02-01", "to": "2026-03-17"})
+
+    assert response.status_code == 302
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.working_from == "2026-02-01"
+    assert saved.working_to == "2026-03-17"
+
+
+@pytest.mark.django_db
+def test_setup_dates_preset_last_month_computed_server_side(client, monkeypatch):
+    monkeypatch.setattr(
+        views_module.timezone, "now", lambda: datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
+    )
+
+    client.post(reverse("setup-dates"), {"preset": "last_month"})
+
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.working_from == "2026-02-15"
+    assert saved.working_to == ""
+
+
+@pytest.mark.django_db
+def test_setup_dates_preset_last_3_months_computed_server_side(client, monkeypatch):
+    monkeypatch.setattr(
+        views_module.timezone, "now", lambda: datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
+    )
+
+    client.post(reverse("setup-dates"), {"preset": "last_3_months"})
+
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.working_from == "2025-12-15"
+
+
+@pytest.mark.django_db
+def test_setup_dates_preset_last_year_computed_server_side(client, monkeypatch):
+    monkeypatch.setattr(
+        views_module.timezone, "now", lambda: datetime(2026, 3, 15, 12, 0, tzinfo=UTC)
+    )
+
+    client.post(reverse("setup-dates"), {"preset": "last_year"})
+
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.working_from == "2025-03-15"
+
+
+@pytest.mark.django_db
+def test_setup_dates_preset_clamps_day_of_month(client, monkeypatch):
+    monkeypatch.setattr(
+        views_module.timezone, "now", lambda: datetime(2026, 3, 31, 12, 0, tzinfo=UTC)
+    )
+
+    client.post(reverse("setup-dates"), {"preset": "last_month"})
+
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.working_from == "2026-02-28"  # Feb has no 31st
+
+
+@pytest.mark.django_db
+def test_setup_dates_kicks_pull_for_accounts_with_live_session_only(client, monkeypatch):
+    from types import SimpleNamespace
+
+    live_email = "t_setup_live@example.com"
+    dead_email = "t_setup_dead@example.com"
+    monkeypatch.setattr(
+        views_module.remote_state, "list_accounts", lambda folder: [live_email, dead_email]
+    )
+
+    class _FakeICloudClient:
+        @staticmethod
+        def from_session(email):
+            return SimpleNamespace(account=email) if email == live_email else None
+
+    monkeypatch.setattr(views_module, "ICloudClient", _FakeICloudClient)
+
+    calls = []
+    monkeypatch.setattr(
+        views_module.pull,
+        "start_background_pull",
+        lambda folder, client: calls.append((folder, client.account)),
+    )
+
+    response = client.post(reverse("setup-dates"), {"preset": "everything"})
+
+    assert response.status_code == 302
+    assert calls == [(settings.WORKING_FOLDER, live_email)]

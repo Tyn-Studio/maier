@@ -24,6 +24,7 @@ from fixtures import build_fixture_folder
 from maier.core import moves
 from maier.core import phaseb as phaseb_module
 from maier.core import queries as queries_module
+from maier.core.folder_settings import FolderSettings, save_settings
 from maier.core.models import DuplicatePair, Photo
 from maier.core.phaseb import (
     PhaseBProgress,
@@ -267,6 +268,62 @@ def test_phash_rerun_is_noop_already_phashed_rows_untouched(tmp_path, monkeypatc
     assert called == []
     photo.refresh_from_db()
     assert photo.phash == original_phash
+
+
+# --- T29: working date range scoping ----------------------------------------
+
+
+@pytest.mark.django_db
+def test_phash_skips_photos_outside_working_range(tmp_path):
+    img_in = _pattern_image(seed=21)
+    img_out = _pattern_image(seed=22)
+    _save_jpeg(img_in, tmp_path / "in-range.jpg")
+    _save_jpeg(img_out, tmp_path / "out-of-range.jpg")
+    photo_in = _db_photo(
+        "in-range.jpg",
+        sha256="e" * 64,
+        captured_at=datetime(2025, 6, 14, 12, 0, tzinfo=UTC),
+    )
+    photo_out = _db_photo(
+        "out-of-range.jpg",
+        sha256="f" * 64,
+        captured_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC),
+    )
+    save_settings(tmp_path, FolderSettings(working_from="2025-06-01", working_to="2025-06-30"))
+
+    progress = PhaseBProgress()
+    run_phase_b(tmp_path, progress)
+
+    photo_in.refresh_from_db()
+    photo_out.refresh_from_db()
+    assert photo_in.phash
+    assert photo_out.phash is None
+
+
+@pytest.mark.django_db
+def test_hash_pending_stays_unscoped_by_working_range(tmp_path):
+    build_fixture_folder(
+        tmp_path,
+        {"in-range.jpg": None, "out-of-range.jpg": None},
+    )
+    scan(tmp_path, ScanProgress())
+    Photo.objects.filter(relative_path="in-range.jpg").update(
+        sha256=None, captured_at=datetime(2025, 6, 14, 12, 0, tzinfo=UTC)
+    )
+    Photo.objects.filter(relative_path="out-of-range.jpg").update(
+        sha256=None, captured_at=datetime(2025, 1, 1, 12, 0, tzinfo=UTC)
+    )
+    save_settings(tmp_path, FolderSettings(working_from="2025-06-01", working_to="2025-06-30"))
+
+    progress = PhaseBProgress()
+    run_phase_b(tmp_path, progress)
+
+    in_range = Photo.objects.get(relative_path="in-range.jpg")
+    out_of_range = Photo.objects.get(relative_path="out-of-range.jpg")
+    # sha256 hashing is deliberately unscoped -- both get hashed regardless
+    # of the configured working range.
+    assert in_range.sha256
+    assert out_of_range.sha256
 
 
 # --- near-dupe pairing (SPEC §6.3/§8) -------------------------------------

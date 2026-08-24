@@ -1,0 +1,43 @@
+{% extends "base.html" %}
+{% block page_name %}setup{% endblock %}
+{% block content %}
+<h1>Set up Maier</h1>
+
+{% if show_step1 %}
+<section class="setup-step">
+  <h2>Step 1 of 2: Connect an iCloud account (optional)</h2>
+  <p class="hint">
+    Attach an iCloud account to pull its photos into this library alongside any local folders.
+    You can also skip this and add an account later from the Accounts screen.
+  </p>
+  <p><a href="{% url 'accounts' %}">Add an iCloud account &rarr;</a></p>
+  <p><a href="{% url 'setup' %}?step=2">Skip &mdash; I'm only using local photos &rarr;</a></p>
+</section>
+{% else %}
+<section class="setup-step">
+  <h2>Step 2 of 2: Choose a working date range</h2>
+  <p class="hint">
+    Heavy background work (iCloud thumbnail downloads, duplicate detection) is scoped to this date
+    range to keep a large library responsive. All metadata is still indexed across the whole
+    library -- the timeline and duplicate detection stay complete. You can change this any time.
+  </p>
+
+  <form method="post" action="{% url 'setup-dates' %}" class="setup-form settings-form">
+    {% csrf_token %}
+    <div class="setup-presets">
+      <button type="submit" name="preset" value="last_month">Last month</button>
+      <button type="submit" name="preset" value="last_3_months">Last 3 months</button>
+      <button type="submit" name="preset" value="last_year">Last year</button>
+      <button type="submit" name="preset" value="everything">Everything</button>
+    </div>
+  </form>
+
+  <form method="post" action="{% url 'setup-dates' %}" class="setup-form settings-form">
+    {% csrf_token %}
+    <label>From <input type="date" name="from" value="{{ working_from }}"></label>
+    <label>To <input type="date" name="to" value="{{ working_to }}"></label>
+    <button type="submit">Save custom range</button>
+  </form>
+</section>
+{% endif %}
+{% endblock %}

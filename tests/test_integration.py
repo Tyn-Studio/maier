@@ -23,8 +23,21 @@ from django.urls import reverse
 from fixtures import build_fixture_folder
 from maier.core import moves
 from maier.core import scan as scan_module
+from maier.core.folder_settings import FolderSettings, save_settings
 from maier.core.models import Photo
 from maier.core.scan import ScanProgress, scan
+
+
+@pytest.fixture(autouse=True)
+def _t29_default_working_range():
+    """T29 added a setup-wizard gate on `grid`: an unset working range now
+    redirects there instead of rendering the grid. This file's grid GETs
+    predate that gate and exercise unrelated behavior -- give every test in
+    this module an "everything" range up front (session-wide WORKING_FOLDER,
+    see this module's own docstring) so they keep hitting the real grid.
+    Explicit gate tests live in test_views.py and monkeypatch this away.
+    """
+    save_settings(settings.WORKING_FOLDER, FolderSettings(working_from="1970-01-01", working_to=""))
 
 
 def _local(naive: datetime) -> datetime:

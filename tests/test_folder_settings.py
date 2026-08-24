@@ -4,11 +4,13 @@ filesystem/JSON, same pattern as test_remote_state.py.
 """
 
 import json
+from datetime import date
 
 from maier.core.folder_settings import (
     FolderSettings,
     load_settings,
     save_settings,
+    working_range,
 )
 
 
@@ -18,6 +20,8 @@ def test_load_settings_missing_file_returns_defaults(tmp_path):
     assert settings.export_destination == ""
     assert settings.export_mode == "manual"
     assert settings.export_date_prefix is False
+    assert settings.working_from == ""
+    assert settings.working_to == ""
 
 
 def test_save_then_load_round_trips(tmp_path):
@@ -93,3 +97,59 @@ def test_corrupt_file_not_a_json_object_quarantined(tmp_path):
     assert loaded.export_destination == ""
     corrupt_files = list(tmp_path.glob("maier-settings.json.corrupt-*"))
     assert len(corrupt_files) == 1
+
+
+# --- working date range (PLAN T29) -------------------------------------------
+
+
+def test_working_from_to_round_trip(tmp_path):
+    settings = FolderSettings(working_from="2026-02-01", working_to="2026-03-17")
+
+    save_settings(tmp_path, settings)
+    loaded = load_settings(tmp_path)
+
+    assert loaded.working_from == "2026-02-01"
+    assert loaded.working_to == "2026-03-17"
+
+
+def test_working_range_unset_when_both_empty():
+    assert working_range(FolderSettings()) is None
+    assert working_range(FolderSettings(working_from="", working_to="")) is None
+
+
+def test_working_range_parses_both_sides():
+    settings = FolderSettings(working_from="2026-02-01", working_to="2026-03-17")
+
+    assert working_range(settings) == (date(2026, 2, 1), date(2026, 3, 17))
+
+
+def test_working_range_open_ended_on_one_side_is_not_unset():
+    # A blank `working_to` with a real `working_from` is a real, deliberate
+    # range (open on the upper end), not "never configured".
+    settings = FolderSettings(working_from="2026-02-01", working_to="")
+
+    result = working_range(settings)
+    assert result is not None
+    assert result == (date(2026, 2, 1), None)
+
+    settings2 = FolderSettings(working_from="", working_to="2026-03-17")
+    result2 = working_range(settings2)
+    assert result2 is not None
+    assert result2 == (None, date(2026, 3, 17))
+
+
+def test_working_range_tolerant_parse_junk_becomes_none():
+    settings = FolderSettings(working_from="not-a-date", working_to="2026-03-17")
+
+    result = working_range(settings)
+    assert result == (None, date(2026, 3, 17))
+
+
+def test_working_range_everything_sentinel_distinct_from_unset():
+    # "Everything" preset saves an explicit working_from rather than leaving
+    # both blank -- distinguishable from "never set up".
+    settings = FolderSettings(working_from="1970-01-01", working_to="")
+
+    result = working_range(settings)
+    assert result is not None
+    assert result == (date(1970, 1, 1), None)

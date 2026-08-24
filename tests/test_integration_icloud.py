@@ -38,10 +38,24 @@ from maier.core import downloads as downloads_module
 from maier.core import phaseb as phaseb_module
 from maier.core import previews as previews_module
 from maier.core import views as views_module
+from maier.core.folder_settings import FolderSettings, save_settings
 from maier.core.models import DuplicatePair, Photo
 from maier.core.phaseb import PhaseBProgress, run_phase_b
 from maier.core.pull import PullProgress, pull_account
 from maier.core.scan import ScanProgress, scan
+
+
+@pytest.fixture(autouse=True)
+def _t29_default_working_range():
+    """Same rationale as `test_integration.py`'s own fixture of this name:
+    T29's setup-wizard gate on `grid` would otherwise redirect every plain
+    `client.get(reverse("grid"))` in this file. An "everything" range keeps
+    this file's pre-existing pull/cull/grid behavior unaffected -- the
+    range-*scoping* behavior itself (backlog/new-asset preview filtering)
+    is unit-tested directly against `pull_account`/`_phash_pending` in
+    `test_pull.py`/`test_phaseb.py`, not here.
+    """
+    save_settings(settings.WORKING_FOLDER, FolderSettings(working_from="1970-01-01", working_to=""))
 
 
 @dataclass

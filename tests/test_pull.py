@@ -14,6 +14,7 @@ import pytest
 
 from maier.core import pull as pull_module
 from maier.core import remote_state
+from maier.core.folder_settings import FolderSettings, save_settings
 from maier.core.models import Photo
 from maier.core.previews import remote_preview_dest
 from maier.core.pull import PullProgress, pull_account, start_background_pull
@@ -325,6 +326,89 @@ def test_repull_is_idempotent_no_duplicate_rows(tmp_path):
     pull_account(tmp_path, client, PullProgress())
 
     assert Photo.objects.filter(remote_id="r1").count() == 1
+
+
+# --- T29: working date range scoping -----------------------------------------
+
+
+@pytest.mark.django_db
+def test_unset_working_range_fetches_all_previews(tmp_path):
+    # No maier-settings.json at all -- current/default behavior, unaffected.
+    assets = [_asset("in_range", T0), _asset("also_fine", T1)]
+    client = FakeClient("luis@example.com", [assets])
+
+    pull_account(tmp_path, client, PullProgress())
+
+    assert remote_preview_dest(tmp_path, "luis@example.com", "in_range").exists()
+    assert remote_preview_dest(tmp_path, "luis@example.com", "also_fine").exists()
+
+
+@pytest.mark.django_db
+def test_new_asset_preview_enqueue_respects_range_but_row_always_upserts(tmp_path):
+    save_settings(tmp_path, FolderSettings(working_from="2025-06-10", working_to="2025-06-20"))
+
+    in_range_at = datetime(2025, 6, 14, 10, 0, tzinfo=UTC)
+    out_of_range_at = datetime(2025, 1, 1, 10, 0, tzinfo=UTC)
+    assets = [_asset("r_in", in_range_at), _asset("r_out", out_of_range_at)]
+    client = FakeClient("luis@example.com", [assets])
+    progress = PullProgress()
+
+    pull_account(tmp_path, client, progress)
+
+    # Row upsert always happens, regardless of range (metadata enumeration
+    # stays whole-library).
+    assert Photo.objects.filter(remote_id="r_in").exists()
+    assert Photo.objects.filter(remote_id="r_out").exists()
+
+    # But the preview fetch is scoped: only the in-range asset's preview was
+    # actually requested/landed.
+    assert client.downloaded == [("r_in", "thumb")]
+    assert remote_preview_dest(tmp_path, "luis@example.com", "r_in").exists()
+    assert not remote_preview_dest(tmp_path, "luis@example.com", "r_out").exists()
+    assert progress.total == 1
+    assert progress.done == 1
+
+
+@pytest.mark.django_db
+def test_backlog_preview_repair_respects_range(tmp_path):
+    # Two already-known rows (e.g. from a prior pull / cache loss) with no
+    # preview cached yet -- one inside the configured range, one outside.
+    in_range_at = datetime(2025, 6, 14, 10, 0, tzinfo=UTC)
+    out_of_range_at = datetime(2025, 1, 1, 10, 0, tzinfo=UTC)
+    Photo.objects.create(
+        source=Photo.SOURCE_ICLOUD,
+        account="luis@example.com",
+        remote_id="r_in",
+        relative_path="@icloud/luis@example.com/r_in",
+        captured_at=in_range_at,
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+        provenance="luis",
+        status=Photo.STATUS_OPTIONAL,
+        file_size=1,
+        file_mtime=0.0,
+    )
+    Photo.objects.create(
+        source=Photo.SOURCE_ICLOUD,
+        account="luis@example.com",
+        remote_id="r_out",
+        relative_path="@icloud/luis@example.com/r_out",
+        captured_at=out_of_range_at,
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+        provenance="luis",
+        status=Photo.STATUS_OPTIONAL,
+        file_size=1,
+        file_mtime=0.0,
+    )
+    save_settings(tmp_path, FolderSettings(working_from="2025-06-10", working_to="2025-06-20"))
+    client = FakeClient("luis@example.com", [[]])  # nothing new to enumerate
+
+    pull_account(tmp_path, client, PullProgress())
+
+    assert remote_preview_dest(tmp_path, "luis@example.com", "r_in").exists()
+    assert not remote_preview_dest(tmp_path, "luis@example.com", "r_out").exists()
+    assert client.downloaded == [("r_in", "thumb")]
 
 
 # --- two-phase progress accounting ------------------------------------------

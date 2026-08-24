@@ -59,9 +59,15 @@ def _wait_for_healthz(port: int, timeout: float) -> tuple[bool, str]:
 # Every page a user can reach from the nav, with a substring its template
 # must render. /accounts is checked with a seeded account-state file (see
 # _seed_account_state) so the per-account row partials render too — the
-# empty page alone would miss include-level template breakage.
+# empty page alone would miss include-level template breakage. /setup is
+# checked unconditionally (PLAN T29): the wizard renders regardless of the
+# working-range gate, so this catches its own template breakage the same
+# way. /grid needs a seeded working range (see _seed_settings) — T29's
+# setup-wizard gate would otherwise redirect a fresh, never-configured
+# folder's /grid to /setup instead of rendering the real grid.
 _PAGE_CHECKS = [
     ("/grid", "filter-bar"),
+    ("/setup", "Set up Maier"),
     ("/summary", "Summary"),
     ("/dupes", "unresolved"),
     ("/accounts", "smoke-test@example.com"),
@@ -75,6 +81,20 @@ def _seed_account_state(folder: str) -> None:
         f.write(
             '{"account": "smoke-test@example.com", "cursor": null,'
             ' "decisions": {}, "downloaded": {}, "version": 1}'
+        )
+
+
+def _seed_settings(folder: str) -> None:
+    """PLAN T29: a fresh folder has no working date range configured, which
+    now gates /grid behind the setup wizard (see `_PAGE_CHECKS`'s comment
+    above). Seed an "everything" range so the smoke test keeps exercising
+    the real grid template, same rationale as `_seed_account_state`.
+    """
+    with open(os.path.join(folder, "maier-settings.json"), "w") as f:
+        f.write(
+            '{"export_destination": "", "export_mode": "manual",'
+            ' "export_date_prefix": false, "working_from": "1970-01-01",'
+            ' "working_to": "", "version": 1}'
         )
 
 
@@ -143,6 +163,7 @@ def main(argv: list[str] | None = None) -> int:
 
     os.makedirs(args.folder, exist_ok=True)
     _seed_account_state(args.folder)
+    _seed_settings(args.folder)
 
     ok = run_smoke_test(args.binary, args.folder, port=args.port, timeout=args.timeout)
     return 0 if ok else 1

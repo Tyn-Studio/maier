@@ -13,6 +13,14 @@ Deliberately duck-typed against `core/icloud.py`'s `ICloudClient` /
 at runtime -- it is being built by a concurrent agent in this same
 milestone. Only imported under `TYPE_CHECKING` for hints; tests exercise
 this module against fakes implementing the same duck-typed surface.
+
+T29: at large-library scale, the *preview fetch* (backlog repair pass and
+newly-discovered assets alike) is scoped to the user's working date range
+(`core/folder_settings.py`) -- metadata enumeration/row-upsert above stays
+whole-library regardless, per SPEC ("cheap; keeps timeline + dupe detection
+complete"). An unset range (setup wizard never completed, or pre-M6 tests
+that never touch `folder_settings`) disables the filter entirely -- current
+behavior is preserved.
 """
 
 from __future__ import annotations
@@ -26,9 +34,10 @@ from typing import TYPE_CHECKING
 
 from django.db import connection
 
+from . import folder_settings, remote_state
 from . import previews as previews_module
-from . import remote_state
 from .models import Photo
+from .queries import _day_end, _day_start  # no import cycle: queries never imports pull
 
 if TYPE_CHECKING:
     from .icloud import ICloudClient, RemoteAsset
@@ -107,6 +116,26 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
     try:
         state = remote_state.load_state(folder, client.account)
 
+        # T29: heavy work (preview fetches) is scoped to the user's working
+        # date range at large-library scale -- metadata enumeration/upsert
+        # below is deliberately NOT filtered by this (SPEC "stays
+        # whole-library; keeps timeline + dupe detection complete"). Read
+        # once per pull, not per-asset: this only ever reads a small JSON
+        # file, but there's no reason to hit it thousands of times.
+        wrange = folder_settings.working_range(folder_settings.load_settings(folder))
+        range_start = range_end = None
+        if wrange is not None:
+            range_from, range_to = wrange
+            if range_from is not None:
+                range_start = _day_start(range_from)
+            if range_to is not None:
+                range_end = _day_end(range_to)
+
+        def _in_range(captured_at: datetime) -> bool:
+            if range_start is not None and captured_at < range_start:
+                return False
+            return not (range_end is not None and captured_at > range_end)
+
         known_ids = set(
             Photo.objects.filter(source=Photo.SOURCE_ICLOUD, account=client.account)
             .exclude(remote_id=None)
@@ -153,11 +182,15 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
         # capture-date filter would hide those forever. "Incremental" per
         # SPEC §18 = skip already-known remote_ids and re-downloads.
         backlog: list[tuple[str, str]] = []
-        for rid, media_type in (
-            Photo.objects.filter(source=Photo.SOURCE_ICLOUD, account=client.account)
-            .exclude(remote_id=None)
-            .order_by("remote_id")
-            .values_list("remote_id", "media_type")
+        backlog_qs = Photo.objects.filter(
+            source=Photo.SOURCE_ICLOUD, account=client.account
+        ).exclude(remote_id=None)
+        if range_start is not None:
+            backlog_qs = backlog_qs.filter(captured_at__gte=range_start)
+        if range_end is not None:
+            backlog_qs = backlog_qs.filter(captured_at__lte=range_end)
+        for rid, media_type in backlog_qs.order_by("remote_id").values_list(
+            "remote_id", "media_type"
         ):
             dest = previews_module.remote_preview_dest(folder, client.account, rid)
             if dest.exists():
@@ -185,6 +218,10 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
                     if asset.remote_id in known_ids or asset.remote_id in state.downloaded:
                         continue
                     try:
+                        # T29: the row upsert always happens regardless of
+                        # the working range -- only the preview *fetch*
+                        # below is scoped (metadata enumeration stays
+                        # whole-library, per SPEC).
                         _process_asset(folder, client, state, asset)
                         known_ids.add(asset.remote_id)
                         if max_captured_at is None or asset.captured_at > max_captured_at:
@@ -192,9 +229,10 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
                     except Exception as exc:  # per-asset errors never abort the pull
                         progress.errors.append(f"{asset.remote_id}: {exc}")
                         continue
-                    with counters_lock:
-                        progress.total += 1
-                    pool.submit(_fetch_preview, asset.remote_id, asset.media_type)
+                    if _in_range(asset.captured_at):
+                        with counters_lock:
+                            progress.total += 1
+                        pool.submit(_fetch_preview, asset.remote_id, asset.media_type)
             except Exception as exc:
                 progress.errors.append(f"list_assets: {exc}")
                 iteration_failed = True

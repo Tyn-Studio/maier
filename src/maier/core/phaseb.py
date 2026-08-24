@@ -15,7 +15,7 @@ from __future__ import annotations
 import hashlib
 import threading
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, date, datetime, time
 from pathlib import Path, PurePosixPath
 
 import imagehash
@@ -23,9 +23,13 @@ from django.db import connection
 from django.db.models import Count, Q, QuerySet
 from PIL import Image, UnidentifiedImageError
 
-from . import moves
+from . import folder_settings, moves
 from . import previews as previews_module
 from .models import DuplicatePair, Photo, absolute_path_for
+
+# T29: local copies of queries.py's `_day_start`/`_day_end` -- importing
+# queries.py here would be circular (queries.py already imports this module
+# for `duplicate_counts`/`non_representative_pks`/etc).
 
 _HASH_CHUNK = 1024 * 1024  # 1 MiB, per brief
 
@@ -54,6 +58,14 @@ class PhaseBProgress:
     finished: bool = False
 
 
+def _day_start(d: date) -> datetime:
+    return datetime.combine(d, time.min, tzinfo=UTC)
+
+
+def _day_end(d: date) -> datetime:
+    return datetime.combine(d, time.max, tzinfo=UTC)
+
+
 def _sha256_file(path: Path) -> str:
     h = hashlib.sha256()
     with path.open("rb") as f:
@@ -63,6 +75,10 @@ def _sha256_file(path: Path) -> str:
 
 
 def _hash_pending(folder: Path, progress: PhaseBProgress) -> None:
+    # T29 (deliberately NOT scoped, unlike `_phash_pending` below): sha256 is
+    # cheap and feeds move reconciliation for every local file regardless of
+    # capture date -- only the pHash/near-dupe/preview sweep is scoped to
+    # the working range at large-library scale.
     try:
         # SPEC §18: remote (iCloud) rows have no local file to hash -- their
         # sha256 stays NULL forever; excluding them here avoids re-queueing
@@ -121,21 +137,31 @@ def _phash_pending(folder: Path, progress: PhaseBProgress) -> None:
     Photos whose preview resolves to the shared RAW/video/corrupt placeholder
     are skipped (still counted in total/done): hashing the identical
     placeholder would pair every such photo with every other one.
+
+    T29: scoped to the working date range at large-library scale (read once
+    per run, not per-photo) -- `_hash_pending` above stays UNSCOPED (cheap
+    sha256 reads feed move reconciliation regardless of date). An unset
+    range disables the filter entirely (current/pre-M6-test behavior).
     """
+    wrange = folder_settings.working_range(folder_settings.load_settings(folder))
+
     try:
         # `sha256__isnull=False` already excludes remote rows (their sha256
         # is always NULL, see `_hash_pending`) -- `.exclude(source=...)` is
         # kept explicit anyway so this stays correct even if that changes.
-        pending = list(
-            Photo.objects.filter(
-                phash__isnull=True,
-                missing=False,
-                media_type=Photo.MEDIA_IMAGE,
-                sha256__isnull=False,
-            )
-            .exclude(source=Photo.SOURCE_ICLOUD)
-            .values_list("pk", "relative_path")
-        )
+        qs = Photo.objects.filter(
+            phash__isnull=True,
+            missing=False,
+            media_type=Photo.MEDIA_IMAGE,
+            sha256__isnull=False,
+        ).exclude(source=Photo.SOURCE_ICLOUD)
+        if wrange is not None:
+            range_from, range_to = wrange
+            if range_from is not None:
+                qs = qs.filter(captured_at__gte=_day_start(range_from))
+            if range_to is not None:
+                qs = qs.filter(captured_at__lte=_day_end(range_to))
+        pending = list(qs.values_list("pk", "relative_path"))
     except Exception as exc:
         progress.errors.append(f"phase B: could not list photos pending pHash: {exc}")
         return

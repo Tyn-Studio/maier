@@ -3,6 +3,8 @@ file moves in moves.py, previews in previews.py. See SPEC §10 for the UI
 spec these implement.
 """
 
+import calendar
+from datetime import date
 from pathlib import Path
 from urllib.parse import quote
 
@@ -11,6 +13,7 @@ from django.core.paginator import Paginator
 from django.http import FileResponse, Http404, HttpResponse, HttpResponseNotAllowed
 from django.shortcuts import get_object_or_404, redirect, render
 from django.urls import reverse
+from django.utils import timezone
 
 from . import (
     culling,
@@ -121,8 +124,26 @@ def stream(request, pk):
 
 
 def grid(request):
+    folder = settings.WORKING_FOLDER
+    current_settings = folder_settings.load_settings(folder)
+    wrange = folder_settings.working_range(current_settings)
+    if wrange is None:
+        # T29: never gate any other page -- the setup wizard itself links
+        # out to /accounts, /settings, /healthz, etc.
+        return redirect("setup")
+
     filters = request.GET
-    photos_qs = queries.filtered_photos(filters)
+    # T29: absent `from`/`to` params default to the working range; an
+    # explicit param (including an explicitly-cleared empty one) always
+    # wins. `QueryDict.copy()` is mutable, unlike `request.GET` itself.
+    effective_filters = filters.copy()
+    range_from, range_to = wrange
+    if "from" not in filters and range_from is not None:
+        effective_filters["from"] = range_from.isoformat()
+    if "to" not in filters and range_to is not None:
+        effective_filters["to"] = range_to.isoformat()
+
+    photos_qs = queries.filtered_photos(effective_filters)
     paginator = Paginator(photos_qs, PAGE_SIZE)
     page = paginator.get_page(filters.get("page") or 1)
 
@@ -143,8 +164,8 @@ def grid(request):
         "provenances": queries.distinct_provenances(),
         "filter_status": filters.get("status", ""),
         "filter_provenance": filters.get("provenance", ""),
-        "filter_from": filters.get("from", ""),
-        "filter_to": filters.get("to", ""),
+        "filter_from": effective_filters.get("from", ""),
+        "filter_to": effective_filters.get("to", ""),
         "filter_dates_low": filters.get("dates") == "low",
         "unresolved_pair_count": phaseb.unresolved_pair_count(),
         "missing_count": queries.missing_photo_count(),
@@ -153,6 +174,8 @@ def grid(request):
         "scanning": scan_progress is not None,
         "scan_progress": scan_progress,
         "update_info": updates.latest_known_update(),
+        "working_from_display": current_settings.working_from,
+        "working_to_display": current_settings.working_to,
     }
     template = "_grid_items.html" if request.headers.get("HX-Request") else "grid.html"
     return render(request, template, context)
@@ -677,3 +700,85 @@ def export_status(request):
     `scan_status`/`_scan_banner.html`.
     """
     return render(request, "_export_progress.html", {"progress": _current_export_progress()})
+
+
+# --- Setup wizard: working date range (PLAN T29) ----------------------------
+
+# Sentinel "everything" range (distinct from "unset" -- see folder_settings.py
+# docstring): open-started far enough back to include any real photo.
+_EVERYTHING_FROM = "1970-01-01"
+
+
+def _months_ago(today: date, months: int) -> date:
+    """`today` minus `months` calendar months, clamping the day-of-month to
+    the target month's last valid day (e.g. Mar 31 minus 1 month -> Feb 28/29,
+    not an invalid Feb 31). No `dateutil` dependency (not in pyproject).
+    """
+    month_index = today.month - 1 - months
+    year = today.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(today.day, calendar.monthrange(year, month)[1])
+    return date(year, month, day)
+
+
+def setup(request):
+    """Setup wizard (PLAN T29), gated on `grid` via `folder_settings.
+    working_range` being unset. Step 1 (attach an iCloud account) only shows
+    when no account is attached yet -- an attached account skips straight to
+    step 2 (mirrors the brief: "step 2 (dates) ... when accounts exist, go
+    straight to step 2"). `?step=2` (the "skip" link, and the grid's "edit
+    range" link when accounts already exist) forces step 2 regardless.
+    """
+    folder = settings.WORKING_FOLDER
+    has_accounts = bool(remote_state.list_accounts(folder))
+    show_step1 = not has_accounts and request.GET.get("step") != "2"
+    current = folder_settings.load_settings(folder)
+
+    context = {
+        "show_step1": show_step1,
+        "has_accounts": has_accounts,
+        "working_from": current.working_from,
+        "working_to": current.working_to,
+    }
+    return render(request, "setup.html", context)
+
+
+def setup_dates(request):
+    """Saves the working date range (preset or custom) and redirects to the
+    grid, which is then unblocked by the gate above. Also kicks a background
+    pull for every attached account with a live session -- SPEC intent:
+    changing the range should immediately go fetch the newly-included
+    backlog, not wait for the next manual "Pull now". Expired/never-attached
+    sessions are skipped silently (same as an idle accounts screen -- this
+    is a background nicety, not a hard requirement of saving the range).
+    """
+    if request.method != "POST":
+        return HttpResponseNotAllowed(["POST"])
+
+    folder = settings.WORKING_FOLDER
+    preset = request.POST.get("preset", "")
+    today = timezone.now().date()
+
+    if preset == "everything":
+        working_from, working_to = _EVERYTHING_FROM, ""
+    elif preset == "last_month":
+        working_from, working_to = _months_ago(today, 1).isoformat(), ""
+    elif preset == "last_3_months":
+        working_from, working_to = _months_ago(today, 3).isoformat(), ""
+    elif preset == "last_year":
+        working_from, working_to = _months_ago(today, 12).isoformat(), ""
+    else:
+        working_from = request.POST.get("from", "").strip()
+        working_to = request.POST.get("to", "").strip()
+
+    current = folder_settings.load_settings(folder)
+    current.working_from = working_from
+    current.working_to = working_to
+    folder_settings.save_settings(folder, current)
+
+    for email in remote_state.list_accounts(folder):
+        client = ICloudClient.from_session(email)
+        if client is not None:
+            pull.start_background_pull(folder, client)
+
+    return redirect("grid")

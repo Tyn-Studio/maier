@@ -5,6 +5,8 @@ from maier.core import views
 urlpatterns = [
     path("healthz", views.healthz, name="healthz"),
     path("", views.home, name="home"),
+    path("setup", views.setup, name="setup"),
+    path("setup/dates", views.setup_dates, name="setup-dates"),
     path("grid", views.grid, name="grid"),
     path("review/<int:pk>", views.review, name="review"),
     path("set-status/<int:pk>", views.set_status, name="set-status"),
