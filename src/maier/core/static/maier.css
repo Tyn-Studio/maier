@@ -911,6 +911,18 @@ body[data-page="review"] main {
   max-width: 460px;
 }
 
+/* PLAN T31 fix: `.account-form` sets `display: flex` and is declared after
+   the generic `.hidden` utility (line ~474) -- on a tied-specificity single
+   class each, source order decides, so `.hidden` alone was silently losing
+   here and the reveal-on-click add-account form rendered visible by
+   default, right alongside the "Connect iCloud account..." button (the
+   live-tested "duplicate add-account UI" bug). Same two-class-selector
+   override already used for `.banner.hidden` / `.shortcuts-overlay.hidden`
+   above, just also applied to this one. */
+.account-form.hidden {
+  display: none;
+}
+
 .account-form label {
   display: flex;
   flex-direction: column;
@@ -1084,4 +1096,28 @@ button.danger {
 .hint {
   color: var(--muted);
   font-size: 0.8rem;
+}
+
+/* Buttonless auto-save "Saved" flash (PLAN T31): each settings section's
+   hx-target span gets a fresh <span class="save-indicator"> swapped in on
+   every successful change-triggered POST -- a fresh DOM node each time, so
+   the fade-out animation restarts per save rather than only playing once. */
+.save-indicator {
+  display: inline-block;
+  font-size: 0.8rem;
+  color: var(--muted);
+  opacity: 0;
+  animation: save-indicator-flash 2s ease forwards;
+}
+
+@keyframes save-indicator-flash {
+  0% {
+    opacity: 1;
+  }
+  70% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
 }

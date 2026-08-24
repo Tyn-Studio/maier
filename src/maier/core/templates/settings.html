@@ -21,7 +21,9 @@
     what's missing or changed.
   </p>
 
-  <form method="post" action="{% url 'settings' %}" class="settings-form">
+  <form method="post" action="{% url 'settings' %}" class="settings-form"
+        hx-post="{% url 'settings' %}" hx-trigger="change delay:400ms"
+        hx-target="#export-saved-indicator" hx-swap="innerHTML">
     {% csrf_token %}
     <label>Destination folder
       <input type="text" name="export_destination" id="export-destination-input"
@@ -45,7 +47,11 @@
       <input type="checkbox" name="export_date_prefix" {% if export_settings.export_date_prefix %}checked{% endif %}>
       Prefix exported filenames with the capture date (YYYY-MM-DD_)
     </label>
-    <button type="submit">Save settings</button>
+    {# Distinguishes "this form submitted, box unchecked" from "a different
+       section's form was submitted" -- an unchecked checkbox is simply
+       absent from POST (views._apply_partial_settings, PLAN T31). #}
+    <input type="hidden" name="export_date_prefix_submitted" value="1">
+    <span id="export-saved-indicator"></span>
   </form>
 
   <form method="post" action="{% url 'export-now' %}" class="settings-form">
@@ -78,12 +84,13 @@
     </div>
   </form>
 
-  <form method="post" action="{% url 'setup-dates' %}" class="setup-form settings-form">
+  <form method="post" action="{% url 'settings' %}" class="setup-form settings-form"
+        hx-post="{% url 'settings' %}" hx-trigger="change delay:400ms"
+        hx-target="#range-saved-indicator" hx-swap="innerHTML">
     {% csrf_token %}
-    <input type="hidden" name="next" value="settings">
-    <label>From <input type="date" name="from" value="{{ export_settings.working_from }}"></label>
-    <label>To <input type="date" name="to" value="{{ export_settings.working_to }}"></label>
-    <button type="submit">Save custom range</button>
+    <label>From <input type="date" name="working_from" value="{{ export_settings.working_from }}"></label>
+    <label>To <input type="date" name="working_to" value="{{ export_settings.working_to }}"></label>
+    <span id="range-saved-indicator"></span>
   </form>
 </section>
 
@@ -112,7 +119,14 @@
   if (btn) {
     btn.addEventListener("click", function () {
       window.pywebview.api.pick_folder().then(function (path) {
-        if (path) input.value = path;
+        if (path) {
+          input.value = path;
+          // Auto-save (PLAN T31): the export form's htmx trigger listens
+          // for "change", which the native picker doesn't fire on its own
+          // since it sets .value programmatically rather than through user
+          // input -- dispatch one so the same auto-save path fires here too.
+          input.dispatchEvent(new Event("change", { bubbles: true }));
+        }
       });
     });
   }

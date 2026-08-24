@@ -18,6 +18,22 @@ import html
 from pathlib import Path
 
 
+def _folder_dialog_kind(webview_module):
+    """Compat shim (PLAN T31): recent pywebview versions deprecated the
+    top-level `webview.FOLDER_DIALOG` constant in favour of
+    `webview.FileDialog.FOLDER`, and log a deprecation warning on every use
+    of the old name. Prefer the new enum when present, fall back to the old
+    constant on older pywebview releases that don't have `FileDialog` yet.
+    Takes the already-imported `webview` module rather than importing it
+    itself, matching this module's lazy-import-inside-functions pattern
+    (module docstring above) so this helper stays importable headless too.
+    """
+    file_dialog = getattr(webview_module, "FileDialog", None)
+    if file_dialog is not None:
+        return file_dialog.FOLDER
+    return webview_module.FOLDER_DIALOG
+
+
 class WindowApi:
     """js_api exposed to the running app window as `window.pywebview.api`
     (PLAN T30): lets the settings page's "Choose folder..." button open a
@@ -38,7 +54,7 @@ class WindowApi:
         import webview
 
         try:
-            paths = self._window.create_file_dialog(webview.FOLDER_DIALOG)
+            paths = self._window.create_file_dialog(_folder_dialog_kind(webview))
         except Exception:
             paths = None
         if not paths:
@@ -74,7 +90,7 @@ def pick_folder() -> Path | None:
 
     def _run(window) -> None:
         try:
-            paths = window.create_file_dialog(webview.FOLDER_DIALOG)
+            paths = window.create_file_dialog(_folder_dialog_kind(webview))
         except Exception:
             paths = None
         if paths:
@@ -190,7 +206,7 @@ def show_home(recents: list[dict]) -> Path | None:
         def pick_and_open(self) -> None:
             window = webview.windows[0]
             try:
-                paths = window.create_file_dialog(webview.FOLDER_DIALOG)
+                paths = window.create_file_dialog(_folder_dialog_kind(webview))
             except Exception:
                 paths = None
             if paths:

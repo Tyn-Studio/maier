@@ -155,10 +155,17 @@ def _reset_download_worker():
     "still running" by this file's `start_worker` calls, and vice versa.
     """
     if downloads_module._worker_thread is not None:
-        downloads_module._worker_thread.join(timeout=5)
+        downloads_module._worker_thread.join(timeout=10)
+        # A drained (or timed-out) worker from another test file may be bound
+        # to that file's tmp folder -- clear the handle so this file's
+        # enqueue always starts a FRESH worker against ITS folder instead of
+        # piggybacking on a stale one (start_worker is single-flight on the
+        # thread handle being alive).
+        downloads_module._worker_thread = None
     yield
     if downloads_module._worker_thread is not None:
-        downloads_module._worker_thread.join(timeout=5)
+        downloads_module._worker_thread.join(timeout=10)
+        downloads_module._worker_thread = None
 
 
 # --- 1. attach -> pull -> mixed local+remote timeline ------------------------
@@ -269,10 +276,11 @@ def test_full_remote_cull_loop_only_selected_originals_land_on_disk(client, monk
         {"status": "selected", "context": "grid"},
     )
     assert response.status_code == 200
-    # The download itself is async -- this request never blocks on it.
-    photo_select.refresh_from_db()
-    assert photo_select.source == Photo.SOURCE_ICLOUD
-
+    # The download is async: the request never blocks on it, but with an
+    # instant fake client the worker can legally finish before this thread
+    # observes anything -- so there is NO valid "still source=icloud right
+    # after the POST" assertion window (flapped both ways on loaded runners,
+    # 2026-08-24). Only the end state is part of the contract:
     _wait_for(lambda: Photo.objects.get(pk=photo_select.pk).source == Photo.SOURCE_LOCAL)
     downloads_module._worker_thread.join(timeout=5)
 

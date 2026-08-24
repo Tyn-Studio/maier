@@ -1904,6 +1904,7 @@ def test_settings_page_post_saves_settings(client):
             "export_destination": "/Volumes/Backup/export",
             "export_mode": "automatic",
             "export_date_prefix": "on",
+            "export_date_prefix_submitted": "1",
         },
     )
 
@@ -1920,12 +1921,46 @@ def test_settings_page_post_saves_settings(client):
 def test_settings_page_post_manual_mode_unchecked_date_prefix(client):
     client.post(
         reverse("settings"),
-        {"export_destination": "/dest", "export_mode": "manual"},
+        {
+            "export_destination": "/dest",
+            "export_mode": "manual",
+            "export_date_prefix_submitted": "1",
+        },
     )
 
     saved = folder_settings.load_settings(settings.WORKING_FOLDER)
     assert saved.export_mode == "manual"
     assert saved.export_date_prefix is False
+
+
+@pytest.mark.django_db
+def test_settings_page_post_date_prefix_checkbox_round_trip_via_hidden_marker(client):
+    # Check it on -- the marker is present alongside the checkbox both times
+    # (matches the real form, PLAN T31), only the checkbox's own presence
+    # differs.
+    client.post(
+        reverse("settings"),
+        {
+            "export_destination": "/dest",
+            "export_mode": "manual",
+            "export_date_prefix": "on",
+            "export_date_prefix_submitted": "1",
+        },
+    )
+    assert folder_settings.load_settings(settings.WORKING_FOLDER).export_date_prefix is True
+
+    # Uncheck it -- browsers omit an unchecked checkbox from POST entirely,
+    # so only the hidden marker distinguishes this from "a different
+    # section's form was submitted" (which must leave date_prefix alone).
+    client.post(
+        reverse("settings"),
+        {
+            "export_destination": "/dest",
+            "export_mode": "manual",
+            "export_date_prefix_submitted": "1",
+        },
+    )
+    assert folder_settings.load_settings(settings.WORKING_FOLDER).export_date_prefix is False
 
 
 @pytest.mark.django_db
@@ -1939,6 +1974,179 @@ def test_settings_page_shows_saved_values_on_reload(client):
 
     body = response.content.decode()
     assert "/x/y" in body
+
+
+@pytest.mark.django_db
+def test_settings_page_post_export_fields_preserves_working_range(client):
+    # PLAN T31: buttonless auto-save means a POST from the export section's
+    # form only ever carries export fields -- the previously-saved working
+    # range must survive untouched (this is the "wipe bug" T30 fixed,
+    # regression-tested here for the new partial-update code path).
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(working_from="2026-01-01", working_to="2026-02-01"),
+    )
+
+    client.post(
+        reverse("settings"),
+        {
+            "export_destination": "/dest",
+            "export_mode": "manual",
+            "export_date_prefix_submitted": "1",
+        },
+    )
+
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.working_from == "2026-01-01"
+    assert saved.working_to == "2026-02-01"
+    assert saved.export_destination == "/dest"
+
+
+@pytest.mark.django_db
+def test_settings_page_post_working_range_preserves_export_fields(client):
+    # The reverse direction of the same regression: a POST from the
+    # working-range form only carries working_from/working_to -- the
+    # previously-saved export settings must survive untouched.
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(
+            export_destination="/keep/me", export_mode="automatic", export_date_prefix=True
+        ),
+    )
+
+    client.post(
+        reverse("settings"),
+        {"working_from": "2026-03-01", "working_to": "2026-04-01"},
+    )
+
+    saved = folder_settings.load_settings(settings.WORKING_FOLDER)
+    assert saved.export_destination == "/keep/me"
+    assert saved.export_mode == "automatic"
+    assert saved.export_date_prefix is True
+    assert saved.working_from == "2026-03-01"
+    assert saved.working_to == "2026-04-01"
+
+
+@pytest.mark.django_db
+def test_settings_page_htmx_post_returns_saved_indicator_partial(client):
+    response = client.post(
+        reverse("settings"),
+        {
+            "export_destination": "/dest",
+            "export_mode": "manual",
+            "export_date_prefix_submitted": "1",
+        },
+        headers={"HX-Request": "true"},
+    )
+
+    assert response.status_code == 200
+    body = response.content.decode()
+    assert "save-indicator" in body
+    assert "Saved" in body
+    # The full page (nav, other sections) is not re-rendered for an htmx
+    # partial-save response.
+    assert "<h1>Settings</h1>" not in body
+
+
+@pytest.mark.django_db
+def test_settings_page_non_htmx_post_still_redirects_to_full_page(client):
+    response = client.post(
+        reverse("settings"),
+        {
+            "export_destination": "/dest",
+            "export_mode": "manual",
+            "export_date_prefix_submitted": "1",
+        },
+    )
+
+    assert response.status_code == 302
+    assert response["Location"] == reverse("settings")
+    follow_up = client.get(response["Location"])
+    assert "<h1>Settings</h1>" in follow_up.content.decode()
+
+
+@pytest.mark.django_db
+def test_settings_page_post_working_range_change_kicks_pull_for_live_sessions(
+    client, monkeypatch
+):
+    from types import SimpleNamespace
+
+    live_email = "t_t31_range_live@example.com"
+    monkeypatch.setattr(
+        views_module.remote_state, "list_accounts", lambda folder: [live_email]
+    )
+    calls = []
+    monkeypatch.setattr(
+        views_module.ICloudClient,
+        "from_session",
+        staticmethod(lambda email: SimpleNamespace(account=email)),
+    )
+    monkeypatch.setattr(
+        views_module.pull,
+        "start_background_pull",
+        lambda folder, client: calls.append((folder, client.account)),
+    )
+
+    client.post(reverse("settings"), {"working_from": "2026-05-01", "working_to": "2026-06-01"})
+
+    assert calls == [(settings.WORKING_FOLDER, live_email)]
+
+
+@pytest.mark.django_db
+def test_settings_page_post_working_range_unchanged_does_not_kick_pull(client, monkeypatch):
+    folder_settings.save_settings(
+        settings.WORKING_FOLDER,
+        folder_settings.FolderSettings(working_from="2026-05-01", working_to="2026-06-01"),
+    )
+    calls = []
+    monkeypatch.setattr(
+        views_module.pull,
+        "start_background_pull",
+        lambda folder, client: calls.append((folder, client)),
+    )
+
+    client.post(reverse("settings"), {"working_from": "2026-05-01", "working_to": "2026-06-01"})
+
+    assert calls == []
+
+
+@pytest.mark.django_db
+def test_settings_page_post_export_only_does_not_kick_pull(client, monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        views_module.pull,
+        "start_background_pull",
+        lambda folder, client: calls.append((folder, client)),
+    )
+
+    client.post(
+        reverse("settings"),
+        {
+            "export_destination": "/dest",
+            "export_mode": "manual",
+            "export_date_prefix_submitted": "1",
+        },
+    )
+
+    assert calls == []
+
+
+@pytest.mark.django_db
+def test_settings_page_has_exactly_one_add_account_email_input(client):
+    response = client.get(reverse("settings"))
+
+    body = response.content.decode()
+    assert body.count('type="email"') == 1
+    assert body.count('name="email"') == 1
+
+
+@pytest.mark.django_db
+def test_settings_page_has_no_save_settings_button(client):
+    response = client.get(reverse("settings"))
+
+    body = response.content.decode()
+    assert "Save settings" not in body
+    assert "Save custom range" not in body
 
 
 @pytest.mark.django_db
@@ -2421,6 +2629,20 @@ def test_setup_step1_embeds_accounts_section(client, monkeypatch):
     body = response.content.decode()
     assert f'action="{reverse("account-login")}"' in body
     assert 'name="email"' in body
+
+
+@pytest.mark.django_db
+def test_setup_step1_has_exactly_one_add_account_email_input(client, monkeypatch):
+    # PLAN T31: the shared _accounts_section.html partial has exactly one
+    # add-account flow (button + reveal form) -- verify no separate,
+    # always-visible email/password form is duplicated on the setup page.
+    monkeypatch.setattr(views_module.remote_state, "list_accounts", lambda folder: [])
+
+    response = client.get(reverse("setup"))
+
+    body = response.content.decode()
+    assert body.count('type="email"') == 1
+    assert body.count('name="email"') == 1
 
 
 @pytest.mark.django_db

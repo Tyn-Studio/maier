@@ -703,6 +703,66 @@ def _current_export_progress():
     return export._current_export
 
 
+def _kick_pulls_for_accounts_with_session(folder) -> None:
+    """Starts a background pull for every attached account that still has a
+    live iCloud session (PLAN T29/T31): shared by `setup_dates` (unconditional,
+    original behaviour) and `settings_page`'s auto-save POST (only when the
+    working range actually changed, see `_apply_partial_settings`) so the
+    "changing the range should immediately go fetch newly-included backlog"
+    intent isn't duplicated between the two. Expired/never-attached sessions
+    are skipped silently -- a background nicety, not a hard requirement.
+    """
+    for email in remote_state.list_accounts(folder):
+        client = ICloudClient.from_session(email)
+        if client is not None:
+            pull.start_background_pull(folder, client)
+
+
+def _apply_partial_settings(folder, post) -> tuple[folder_settings.FolderSettings, bool]:
+    """Applies only the fields present in `post` onto the currently saved
+    settings and persists the result (PLAN T31: settings.html auto-saves each
+    section independently on change, so a single POST only ever carries one
+    section's fields -- the other section's saved values must survive
+    untouched, which is the "wipe bug" T30 fixed for export-vs-range and this
+    must keep fixed now that both directions go through the same partial
+    update).
+
+    The date-prefix checkbox needs its own presence marker
+    (`export_date_prefix_submitted`, a hidden input in that form) since an
+    *unchecked* checkbox is simply absent from `POST` -- indistinguishable
+    from "a different section's form was submitted" without it.
+
+    Returns `(saved, range_changed)`; `range_changed` is True only when
+    `working_from`/`working_to` were part of this POST and actually differ
+    from what was saved before, used to decide whether to kick background
+    pulls (mirrors `setup_dates`, PLAN T29 -- see `_kick_pulls_for_accounts_with_session`).
+    """
+    current = folder_settings.load_settings(folder)
+    range_changed = False
+
+    if "export_destination" in post:
+        current.export_destination = post.get("export_destination", "").strip()
+
+    if "export_mode" in post:
+        mode = post.get("export_mode", folder_settings.MODE_MANUAL)
+        if mode not in (folder_settings.MODE_MANUAL, folder_settings.MODE_AUTOMATIC):
+            mode = folder_settings.MODE_MANUAL
+        current.export_mode = mode
+
+    if "export_date_prefix_submitted" in post:
+        current.export_date_prefix = post.get("export_date_prefix") == "on"
+
+    if "working_from" in post or "working_to" in post:
+        new_from = post.get("working_from", current.working_from).strip()
+        new_to = post.get("working_to", current.working_to).strip()
+        range_changed = new_from != current.working_from or new_to != current.working_to
+        current.working_from = new_from
+        current.working_to = new_to
+
+    folder_settings.save_settings(folder, current)
+    return current, range_changed
+
+
 def settings_page(request):
     """Single per-folder configuration screen (PLAN T30, merging T18's
     accounts screen and T25's export settings): iCloud accounts, export
@@ -710,26 +770,22 @@ def settings_page(request):
     folder picker for the export destination (window mode only) is
     client-side JS calling `window.pywebview.api.pick_folder()` -- see
     `window.py`'s `WindowApi`; this view never touches pywebview itself.
+
+    PLAN T31: there is no more "Save settings" button -- each section
+    auto-saves on `change` via htmx, posting only its own fields, handled by
+    `_apply_partial_settings` above. An htmx POST gets back just the tiny
+    "Saved" indicator partial for that section; a plain (non-htmx) POST
+    still redirects back to a full page render (defensive fallback, e.g. JS
+    disabled -- though every current form is htmx-driven).
     """
     folder = settings.WORKING_FOLDER
 
     if request.method == "POST":
-        dest = request.POST.get("export_destination", "").strip()
-        mode = request.POST.get("export_mode", folder_settings.MODE_MANUAL)
-        if mode not in (folder_settings.MODE_MANUAL, folder_settings.MODE_AUTOMATIC):
-            mode = folder_settings.MODE_MANUAL
-        date_prefix = request.POST.get("export_date_prefix") == "on"
-        current = folder_settings.load_settings(folder)
-        folder_settings.save_settings(
-            folder,
-            folder_settings.FolderSettings(
-                export_destination=dest,
-                export_mode=mode,
-                export_date_prefix=date_prefix,
-                working_from=current.working_from,
-                working_to=current.working_to,
-            ),
-        )
+        _, range_changed = _apply_partial_settings(folder, request.POST)
+        if range_changed:
+            _kick_pulls_for_accounts_with_session(folder)
+        if request.headers.get("HX-Request") == "true":
+            return render(request, "_saved_indicator.html")
         return redirect("settings")
 
     context = _settings_context(request)
@@ -847,10 +903,7 @@ def setup_dates(request):
     current.working_to = working_to
     folder_settings.save_settings(folder, current)
 
-    for email in remote_state.list_accounts(folder):
-        client = ICloudClient.from_session(email)
-        if client is not None:
-            pull.start_background_pull(folder, client)
+    _kick_pulls_for_accounts_with_session(folder)
 
     if request.POST.get("next") == "settings":
         return redirect("settings")

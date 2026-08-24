@@ -1,0 +1,8 @@
+{% comment %}
+Tiny per-section "saved" acknowledgement for the Settings page's buttonless
+auto-save (PLAN T31): each auto-saving form's `hx-target` points at a span
+wrapping this include, so a successful `change`-triggered POST swaps in a
+fresh copy -- the CSS animation restarts on every swap (a fresh DOM node),
+giving a fade-out flash each time a field is saved.
+{% endcomment %}
+<span class="save-indicator">Saved &#10003;</span>
