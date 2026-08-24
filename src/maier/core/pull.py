@@ -34,6 +34,14 @@ if TYPE_CHECKING:
     from .icloud import ICloudClient, RemoteAsset
 
 
+def _is_jpeg(path: Path) -> bool:
+    try:
+        with path.open("rb") as f:
+            return f.read(2) == b"\xff\xd8"
+    except OSError:
+        return False
+
+
 @dataclass
 class PullProgress:
     account: str = ""
@@ -107,12 +115,16 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
 
         counters_lock = threading.Lock()
 
-        def _fetch_preview(rid: str) -> None:
+        def _fetch_preview(rid: str, media_type: str) -> None:
+            # Videos need the JPEG poster rendition ("medium_image") -- their
+            # plain "medium" is an MP4, which saved under a .jpg preview name
+            # renders as a broken thumbnail (found live, 2026-08-24).
+            version = "medium_image" if media_type == Photo.MEDIA_VIDEO else "medium"
             err = None
             try:
                 dest = previews_module.remote_preview_dest(folder, client.account, rid)
                 if not dest.exists():
-                    client.download(rid, "medium", dest)
+                    client.download(rid, version, dest)
             except Exception as exc:
                 err = f"{rid}: preview fetch failed: {exc}"
             with counters_lock:
@@ -136,19 +148,31 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
         # libraries gain OLD photos later (device syncs, imports), and a
         # capture-date filter would hide those forever. "Incremental" per
         # SPEC §18 = skip already-known remote_ids and re-downloads.
-        backlog = [
-            rid
-            for rid in sorted(known_ids)
-            if not previews_module.remote_preview_dest(folder, client.account, rid).exists()
-        ]
+        backlog: list[tuple[str, str]] = []
+        for rid, media_type in (
+            Photo.objects.filter(source=Photo.SOURCE_ICLOUD, account=client.account)
+            .exclude(remote_id=None)
+            .order_by("remote_id")
+            .values_list("remote_id", "media_type")
+        ):
+            dest = previews_module.remote_preview_dest(folder, client.account, rid)
+            if dest.exists():
+                if media_type == Photo.MEDIA_VIDEO and not _is_jpeg(dest):
+                    # Cache repair: earlier pulls saved videos' "medium"
+                    # rendition (an MP4) under the .jpg preview name.
+                    # Previews are cache -- discard and refetch the poster.
+                    dest.unlink(missing_ok=True)
+                else:
+                    continue
+            backlog.append((rid, media_type))
 
         iteration_failed = False
         max_captured_at: datetime | None = state.cursor
         with ThreadPoolExecutor(max_workers=4) as pool:
             with counters_lock:
                 progress.total += len(backlog)
-            for rid in backlog:
-                pool.submit(_fetch_preview, rid)
+            for rid, media_type in backlog:
+                pool.submit(_fetch_preview, rid, media_type)
 
             try:
                 for asset in client.list_assets(since=None):
@@ -166,7 +190,7 @@ def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> 
                         continue
                     with counters_lock:
                         progress.total += 1
-                    pool.submit(_fetch_preview, asset.remote_id)
+                    pool.submit(_fetch_preview, asset.remote_id, asset.media_type)
             except Exception as exc:
                 progress.errors.append(f"list_assets: {exc}")
                 iteration_failed = True

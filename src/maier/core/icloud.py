@@ -72,7 +72,16 @@ logger = logging.getLogger("maier.icloud")
 # into invalid syntax -- see exiftool.py/previews.py for the same workaround.
 _PYICLOUD_ERRORS = (PyiCloudException, OSError)
 
-_VERSION_NAMES = ("thumb", "medium", "original")
+# thumb/medium/original exist on every asset (for videos, medium/thumb are
+# MP4 renditions). Video assets additionally expose JPEG poster frames as
+# "medium_image"/"thumb_image" (verified against a real library,
+# 2026-08-24) -- callers fetching an *image preview of a video* must use
+# those; falling back to "original" would hand back video bytes.
+_VERSION_NAMES = ("thumb", "medium", "original", "thumb_image", "medium_image")
+_IMAGE_ONLY_FALLBACKS = {
+    "medium_image": ("medium_image", "thumb_image"),
+    "thumb_image": ("thumb_image", "medium_image"),
+}
 _CHUNK_SIZE = 1024 * 1024
 
 
@@ -239,7 +248,14 @@ class ICloudClient:
             available = asset.versions
         except _PYICLOUD_ERRORS as exc:
             raise ICloudError(f"Could not read versions for {remote_id}: {exc}") from exc
-        use_version = version if version in available else "original"
+        if version in _IMAGE_ONLY_FALLBACKS:
+            # An image rendition of a video must never fall back to
+            # "original" (video bytes where the caller expects a JPEG).
+            use_version = next((v for v in _IMAGE_ONLY_FALLBACKS[version] if v in available), None)
+            if use_version is None:
+                raise ICloudError(f"iCloud asset {remote_id} has no image rendition")
+        else:
+            use_version = version if version in available else "original"
 
         try:
             data = asset.download(use_version)
