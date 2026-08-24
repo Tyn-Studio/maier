@@ -1996,3 +1996,36 @@ def test_grid_has_export_and_settings_links(client):
     body = response.content.decode()
     assert f'href="{reverse("settings")}"' in body
     assert f'action="{reverse("export-now")}"' in body
+
+
+# --- update notification banner (PLAN T27) ----------------------------------
+
+
+@pytest.mark.django_db
+def test_grid_shows_update_banner_when_available(client, monkeypatch):
+    from maier.core import updates as updates_module
+
+    monkeypatch.setattr(
+        views_module.updates,
+        "latest_known_update",
+        lambda: updates_module.UpdateInfo(
+            version="9.9.9", url="https://github.com/Tyn-Studio/maier/releases/tag/v9.9.9"
+        ),
+    )
+
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert "banner update-available" in body
+    assert "Maier 9.9.9 is available" in body
+    assert 'href="https://github.com/Tyn-Studio/maier/releases/tag/v9.9.9"' in body
+
+
+@pytest.mark.django_db
+def test_grid_hides_update_banner_when_absent(client, monkeypatch):
+    monkeypatch.setattr(views_module.updates, "latest_known_update", lambda: None)
+
+    response = client.get(reverse("grid"))
+
+    body = response.content.decode()
+    assert "update-available" not in body

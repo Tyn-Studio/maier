@@ -1,6 +1,12 @@
 {% extends "base.html" %}
 {% block page_name %}grid{% endblock %}
 {% block content %}
+{% if update_info %}
+<div class="banner update-available">
+  Maier {{ update_info.version }} is available &mdash;
+  <a href="{{ update_info.url }}" target="_blank">Download</a>
+</div>
+{% endif %}
 <div id="scan-banner">
   {% include "_scan_banner.html" with progress=scan_progress %}
 </div>

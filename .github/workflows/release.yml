@@ -158,7 +158,28 @@ jobs:
           merge-multiple: true
 
       - name: Attach bundles to GitHub Release
+        # PLAN T27 / CTO update-notification flag: this job is gated on
+        # `on: push: tags: v*` at the top of this file (see the trigger
+        # block) -- nothing here runs on ordinary pushes/PRs, only on an
+        # actual tag push.
+        #
+        # !!! BEHAVIOR CHANGE, FLAGGED PER T27 BRIEF !!!
+        # `draft` flipped true -> false (with `prerelease: false` set
+        # explicitly) so that pushing a `v*` tag now publishes a VISIBLE
+        # GitHub Release immediately, no human "publish" click required.
+        # This is a deliberate, not accidental, change: GitHub's
+        # `releases/latest` API (which `core/updates.py`'s in-app update
+        # check polls) only ever returns non-draft, non-prerelease releases
+        # -- a draft release is invisible to it, so the update notification
+        # feature does not work at all until this flips. Net effect: from
+        # now on, tagging `vX.Y.Z` on this repo publishes a public release
+        # the moment CI finishes, with no review gate in between. If a
+        # human-reviewed-before-publish step is wanted back, reintroduce it
+        # as a separate manual "promote" step (e.g. workflow_dispatch that
+        # un-drafts a specific release) rather than reverting this flag,
+        # since reverting silently breaks the update check again.
         uses: softprops/action-gh-release@v2
         with:
           files: artifacts/*
-          draft: true # human reviews + publishes; nothing goes live automatically
+          draft: false
+          prerelease: false

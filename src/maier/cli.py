@@ -106,6 +106,17 @@ def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
 
     ensure_exiftool(background=True)
 
+    # PLAN T27: notify of newer releases without ever self-modifying the
+    # app. Best-effort only -- the update check must never stop the app
+    # from booting (it fails silently anyway; this try/except is belt and
+    # braces around the thread-spawn itself).
+    try:
+        from maier.core import updates
+
+        updates.start_background_check()
+    except Exception:
+        pass
+
     port = _pick_port(port)
     url = f"http://127.0.0.1:{port}/"
     print(f"Maier serving {folder} at {url}")

@@ -25,6 +25,7 @@ from . import (
     queries,
     remote_state,
     streaming,
+    updates,
 )
 from .icloud import ICloudClient, ICloudError, TwoFactorRequired
 from .models import DuplicatePair, Photo
@@ -151,6 +152,7 @@ def grid(request):
         "total_photo_count": queries.total_photo_count(),
         "scanning": scan_progress is not None,
         "scan_progress": scan_progress,
+        "update_info": updates.latest_known_update(),
     }
     template = "_grid_items.html" if request.headers.get("HX-Request") else "grid.html"
     return render(request, template, context)

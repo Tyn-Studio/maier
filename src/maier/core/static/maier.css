@@ -58,6 +58,20 @@ main {
   display: none;
 }
 
+/* --- update notification (PLAN T27) -------------------------------- */
+/* Subtle accent, not alarming -- an available update is routine news, not
+   a warning (contrast with .banner.error's red treatment above). */
+
+.banner.update-available {
+  background: rgba(79, 140, 255, 0.1);
+  border: 1px solid var(--accent);
+  color: var(--fg);
+}
+
+.banner.update-available a {
+  font-weight: 600;
+}
+
 /* --- filter bar ------------------------------------------------------ */
 
 .filter-bar {
