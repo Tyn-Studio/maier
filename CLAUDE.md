@@ -25,6 +25,8 @@ Read SPEC.md before implementing anything. PLAN.md holds the task breakdown and 
 5. Views return full pages or HTMX partials (plain HTML fragments). Keep views thin; logic lives in `core/` modules with unit tests.
 6. exiftool may be absent: metadata extraction must degrade gracefully to Pillow (JPEG/HEIC/PNG/TIFF) per SPEC §12. Never make exiftool a hard dependency.
 7. SQLite in WAL mode; long work (scan, previews) runs in background threads — keep DB writes short and idempotent (upserts).
+8. **iCloud accounts are strictly read-only** (SPEC §18): the web API is only ever used to read metadata and download image data — never delete, never modify, never write. Passwords are used transiently for login and never persisted (session tokens only, global data dir).
+9. Remote (iCloud) photos have no local file until selected: their durable state lives in `{folder}/icloud-state/{account}.json` (NOT in `.culler/` — it must survive cache deletion and travel with the folder). Originals download only into `selected/{account}/…`; once downloaded they are ordinary local files.
 
 ## Style
 

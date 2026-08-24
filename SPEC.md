@@ -41,8 +41,8 @@ Rules:
 ## 4. Non-goals (v1)
 
 - No photo editing of any kind.
-- No cloud sync, accounts, or multi-user support. One person, one machine, one folder at a time.
-- No direct reading of Apple Photos `.photoslibrary` bundles or Lightroom catalogs — users export originals to folders first (documented in README).
+- No cloud *sync* and no multi-user support. One person, one machine, one folder at a time. (One-way iCloud *import* is in scope as of v2 — see §18. Write-back to any cloud account remains a non-goal.)
+- No direct reading of Apple Photos `.photoslibrary` bundles or Lightroom catalogs — users export originals to folders first (documented in README), or pull from iCloud per §18.
 - No AI scene detection / face recognition.
 - The app never modifies file *contents*, never deletes files, and only ever moves them between the working folder's own subtrees.
 
@@ -220,6 +220,7 @@ Default mode: pywebview (WKWebView / WebView2 / WebKitGTK) with native folder pi
 2. **M2 — Full indexing**: Phase B background queue (hashes, exact-dupe groups + auto-reject policy, pHash + near-dupe screen), Live Photos, RAW previews, videos, move reconciliation, missing-file handling, provenance filter.
 3. **M3 — Desktop feel**: pywebview window + native pickers as default, recent-folders home, exiftool auto-download, polish (day headers, badges, shortcut overlay, dark theme, indexing banner, summary screen).
 4. **M4 — Distribution**: PyPI publish, PyInstaller specs, GitHub Actions release pipeline, smoke tests, README install docs for all three tiers.
+5. **M5 — iCloud sources (§18)**: multi-account attach with 2FA, incremental thumbnail-first pulls, select-downloads-original culling, accounts screen. *Success: attach two real accounts, pull, cull remote photos alongside local ones, verify only selected originals land in `selected/{account}/` and nothing changes in either iCloud account.*
 
 ## 17. Open questions
 
@@ -229,3 +230,31 @@ Default mode: pywebview (WKWebView / WebView2 / WebKitGTK) with native folder pi
 4. **"New since last time" tracking** — the old incremental-export requirement dissolved with the move model (`selected/` is always the current selection). If a need emerges to know *which selected photos are new since the last upload/handoff*, add a lightweight "mark sync point" feature (DB timestamp + "added since" filter). Deferred until actually needed.
 5. **RAW+JPEG pairs** — v1 treats them as two photos (near-dupe screen surfaces them). Auto-stacking as one unit that moves together is a possible M2+ refinement.
 6. **macOS Intel support** — universal2 or Apple-Silicon-only? Decide at M4.
+
+## 18. iCloud sources (v2, decided 2026-08-24)
+
+Multiple Apple accounts can be attached as **read-only import sources**. Their photos appear in the same capture-date timeline as local files and are culled with the same keys.
+
+### Hard rules
+
+1. **Never modify anything in an iCloud account.** No deletes, no album changes, no writes of any kind — the web API is used exclusively to read metadata and download image data. (Extends §4's non-goals: rejecting a photo locally never touches iCloud.)
+2. **Originals are downloaded only on selection.** Culling browses thumbnails/medium previews; `P` (select) enqueues download of the original into `selected/{account}/…`. Rejected and undecided remote photos never materialize as local files.
+3. Once an original is downloaded it becomes a normal local file: further status changes are ordinary file moves (unflag moves it to `{account}/…` in the root — it is never deleted).
+
+### Access path
+
+- Unofficial iCloud web API via the maintained `pyicloud` package (2.x), wrapped behind `core/icloud.py` so the dependency is swappable. Known constraints accepted: per-account Apple-ID login with interactive 2FA, session tokens that expire periodically (re-auth prompt), breakage risk on Apple-side changes, and no accounts with Advanced Data Protection unless "Access iCloud Data on the Web" is enabled.
+- Passwords are used transiently for login and **never persisted**; only pyicloud's session/trust tokens are stored, under the global data dir (`§11`), per account.
+
+### State model
+
+- Remote items get DB rows (`Photo.source = "icloud"`, `account`, `remote_id`, remote capture date/dimensions from API metadata) but **the DB stays a cache**: durable remote state lives in per-account JSON files in the working folder at `{folder}/icloud-state/{account}.json` — portable with the folder, survives `.culler/` deletion. Each records: the incremental sync cursor (last pull watermark), and the per-remote-id decision map (`rejected` / `undecided`; `selected` is derivable from the downloaded file in `selected/{account}/` and is recorded only as a download-completed marker).
+- **Pulls are incremental**: first pull optionally bounded by a date range; subsequent pulls fetch only items newer than the cursor. Re-pulls are idempotent (keyed by `remote_id`).
+- Thumbnails/medium previews cache under `.culler/previews/` keyed by `remote_id` (cache role, regenerable by re-fetch).
+- Cross-account exact duplicates: remote items join §8 grouping once their selected original is downloaded and hashed; pre-download, near-identical remote items are surfaced via capture-time + filename + size heuristics (best effort).
+
+### UI
+
+- **Accounts screen**: list attached accounts (email, session status, last pull, item counts), add account (email + password + 2FA code prompt), re-auth when a session expires, "Pull now" with progress (mirrors the indexing banner pattern).
+- Remote photos show a cloud badge in grid/review; selection shows download progress until the original lands.
+

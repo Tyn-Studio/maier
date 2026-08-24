@@ -29,6 +29,14 @@ Process per task: lead writes brief → dev agent implements + tests → lead re
 
 - [~] **T14** *(mechanics done + MIT licensed; blocked on final name only)* PyPI packaging + publish workflow; PyInstaller specs (macOS/Windows/Linux) + GitHub Actions release matrix + bundle smoke test; README install docs. Resolve open questions: final name, license.
 
+## M5 — iCloud sources (SPEC §18)
+
+- [ ] **T15 iCloud client** — `core/icloud.py`: thin wrapper over `pyicloud` 2.x (new dep). Session/trust-token store per account under global data dir; `login` (raises `TwoFactorRequired`), `submit_2fa`, `from_session`, `list_assets(since)` iterator, `download(remote_id, version, dest)` for thumb/medium/original. All tests against fakes — no network, no real accounts.
+- [ ] **T16 Remote model + pull pipeline** — migration: `Photo.source` ("local"/"icloud", default local), `account`, `remote_id`; `core/remote_state.py` (per-account JSON in `{folder}/icloud-state/`, cursor + decisions + downloaded map, atomic writes); `core/pull.py`: `pull_account` = list→upsert remote rows→prefetch medium previews into `.culler/previews/`; scan/phaseb/queries updated to EXCLUDE `source="icloud"` rows from file walks, missing-marking, hashing, pHash, Live-Photo pairing.
+- [ ] **T17 Remote-aware culling** — set-status branches on source: remote reject/undecide = state-file + DB write (no file move); remote select = enqueue original download → lands at `selected/{account}/…` (collision-suffixed) → row converts to local (`source="local"`, relative_path set, sha256 via Phase B); download queue with progress + failure retry; unflag after download = normal local move to `{account}/…`.
+- [ ] **T18 Accounts UI** — accounts screen (list, add w/ email+password+2FA forms, re-auth, "Pull now" + progress banner), cloud badge on remote cells/review, download-pending indicator on selected-but-not-yet-downloaded, nav link.
+- [ ] **T19 M5 integration** — end-to-end tests with a fake client: attach→pull→cull mixed local+remote timeline→only selected originals on disk→state survives `.culler/` deletion→incremental re-pull idempotent; README/§18 docs; acceptance per SPEC §16.5.
+
 ## Interfaces (agents code against these — deviations must be flagged)
 
 ```python
@@ -65,6 +73,43 @@ def preview_path(folder: Path, photo: Photo) -> Path: ...          # generates i
 # URL names (templates depend on these)
 # "grid" (GET, params: status, provenance, page, from, to), "review" <int:pk>,
 # "set-status" <int:pk> (POST, param status), "preview" <int:pk>, "healthz", "home"
+
+# --- M5 interfaces ---
+
+# core/icloud.py (T15)
+class TwoFactorRequired(Exception): ...   # carries a pending client to submit the code on
+class ICloudError(Exception): ...
+@dataclass
+class RemoteAsset:
+    remote_id: str; filename: str; captured_at: datetime  # aware UTC
+    size: int; media_type: str  # "image" | "video"
+class ICloudClient:
+    account: str  # the Apple-ID email
+    @classmethod
+    def login(cls, email: str, password: str) -> "ICloudClient": ...  # may raise TwoFactorRequired(pending)
+    @classmethod
+    def from_session(cls, email: str) -> "ICloudClient | None": ...   # stored session or None
+    def submit_2fa(self, code: str) -> bool: ...
+    def list_assets(self, since: datetime | None) -> Iterator[RemoteAsset]: ...
+    def download(self, remote_id: str, version: str, dest: Path) -> None: ...  # "thumb"|"medium"|"original"
+
+# core/remote_state.py (T16) — {folder}/icloud-state/{account-slug}.json, atomic writes
+@dataclass
+class AccountState:
+    account: str; cursor: datetime | None
+    decisions: dict[str, str]    # remote_id -> "rejected" | "optional"
+    downloaded: dict[str, str]   # remote_id -> relative_path of the downloaded original
+def load_state(folder: Path, account: str) -> AccountState: ...
+def save_state(folder: Path, state: AccountState) -> None: ...
+def list_accounts(folder: Path) -> list[str]: ...
+
+# core/pull.py (T16)
+def pull_account(folder: Path, client: ICloudClient, progress: PullProgress) -> None: ...
+def start_background_pull(folder: Path, client: ICloudClient) -> PullProgress: ...
+
+# Photo model additions (T16): source ("local"|"icloud"), account (str, ""),
+# remote_id (str|None, unique together with account). Remote rows:
+# relative_path = f"@icloud/{account}/{remote_id}" sentinel (never a real path).
 ```
 
 ## Decisions log
@@ -81,4 +126,5 @@ def preview_path(folder: Path, photo: Photo) -> Path: ...          # generates i
 - 2026-08-21: T11+T12 reviewed & accepted. exiftool pinned to 13.59 via SourceForge (exiftool.org's direct URL 404s once superseded; SourceForge keeps versions) — sha256 cross-checked against exiftool.org/checksums.txt by lead; download wired into folder-open (background, non-blocking) and live-verified on this machine (`exiftool -ver` → 13.59). Desktop shell: window mode default, `CULLER_FORCE_NO_WINDOW=1` for headless/CI, recents in global config (`CULLER_CONFIG_DIR` test override), bare `culler --browser` prints usage instead of a placeholder-folder home (deviation from SPEC §10's path-input home — revisit if requested). GUI paths (window/picker/home) not automatable — need a manual pass from Luis. `culler status` no longer records recents (only real opens do).
 - 2026-08-21: T13 reviewed & accepted; **M3 complete** (248 tests). Summary screen, low-confidence date filter+glyphs, exiftool capture dates for RAW/video (one process per file — batch via -stay_open if indexing large RAW sets feels slow), dupes zoom, badge corners, three-way empty states. Lead redesigned the scan banner polling: agent's 286-based approach would request-storm in a real browser (`load` re-fires on every self-swap); replaced with recursive load-polling — in-flight responses carry the next `load delay:2s` trigger, idle responses are inert, rescan swaps a live poller back in.
 - 2026-08-21: T14 mechanics reviewed & accepted (250 tests). Wheel verified to ship templates/static/migrations. Lead fixed the PyInstaller spec (Django's string-imports need `collect_submodules` — first build died on `culler.settings`) and verified the real macOS bundle end-to-end: builds, boots, serves grid/static/summary, smoke test PASS. Release workflow inert by design (publish `if: false`, draft releases). **Blocked on CTO decisions:** final name ("culler" is taken on PyPI; free: cullkit, lightcull, cullfolder; photo-culler free but collides with commercial "PhotoCuller") and license (MIT vs Apache-2.0). All rename points are greppable via TODO(name)/TODO(license).
+- 2026-08-24: **M5 scoped (Luis):** multi-account iCloud import — thumbnails-first culling, originals download ONLY on select into `selected/{account}/`, incremental pulls, strictly one-way/read-only (never modify iCloud), unofficial web API accepted (`pyicloud` 2.6.5, active as of 2026-06). SPEC §18 added; CLAUDE.md hard rules 8–9 added. Remote decisions are durable state in `{folder}/icloud-state/` (NOT `.culler/`) since location-derived status is impossible for undownloaded items.
 - 2026-08-21: **License decided: MIT** (Luis) — LICENSE file added, pyproject license table set, README updated. **Name deferred** (Luis): working name "culler" stays; PyPI publish remains gated until the name lands. Remaining before first release: pick name → grep TODO(name) → tag v0.1.0 → iterate release.yml on the real run.
