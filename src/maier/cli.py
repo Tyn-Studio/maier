@@ -81,6 +81,11 @@ def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
     flow: bootstrap Django, migrate, start indexing, then serve either in
     a pywebview window (default) or a plain browser tab (--browser /
     MAIER_FORCE_NO_WINDOW / window unavailable)."""
+    # imagehash's FFT backend (ducc0) sizes its thread pool to every CPU
+    # core; combined with scan + pull + preview workers at boot, the
+    # thundering herd starved the UI server's own threads -- observed live
+    # as a ~50-thread process beachballing at first paint (2026-08-25).
+    os.environ.setdefault("DUCC0_NUM_THREADS", "2")
     _bootstrap_django(folder)
 
     from django.core.management import call_command
@@ -91,9 +96,24 @@ def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
 
     application = get_wsgi_application()
 
-    from maier.core.scan import start_background_scan
+    # Delay ALL background heavy-lifting a few seconds: the window's first
+    # page must render instantly; scan/pulls lose nothing by starting at
+    # t+3s (same 2026-08-25 boot-stampede fix as DUCC0_NUM_THREADS above).
+    def _start_background_work() -> None:
+        try:
+            from maier.core.scan import start_background_scan
 
-    start_background_scan(folder)
+            start_background_scan(folder)
+        except Exception:
+            pass
+        try:
+            from maier.core.pull import resume_pulls
+
+            resume_pulls(folder)
+        except Exception:
+            pass
+
+    threading.Timer(3.0, _start_background_work).start()
 
     from maier.recents import record_recent
 
@@ -114,16 +134,6 @@ def _open_folder(folder: Path, *, browser: bool, port: int) -> int:
         from maier.core import updates
 
         updates.start_background_check()
-    except Exception:
-        pass
-
-    try:
-        # Resume iCloud preview sync for every account with a live session --
-        # restarts previously left the backlog dead until a manual "Pull
-        # now" (CTO pain point, 2026-08-24). Never blocks boot.
-        from maier.core.pull import resume_pulls
-
-        resume_pulls(folder)
     except Exception:
         pass
 
