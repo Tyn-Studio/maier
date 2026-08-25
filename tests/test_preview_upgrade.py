@@ -350,3 +350,38 @@ def test_thumb_and_medium_tier_keyed_single_flight(tmp_path, monkeypatch):
 
     with calls_lock:
         assert sorted(calls) == [("t4", "medium"), ("t4", "thumb")]
+
+
+@pytest.mark.django_db(transaction=True)
+def test_enqueue_medium_warms_window_for_uncached_asset(tmp_path, monkeypatch):
+    """Mediums MUST warm too: a cache-miss medium fetch falls back to the
+    single-asset lookup Apple never answers -- the review screen silently
+    never sharpened until warming covered both tiers (2026-08-25)."""
+    from datetime import UTC, datetime
+
+    scans: list[tuple[int, int]] = []
+
+    class WindowClient(FakeClient):
+        def __init__(self):
+            super().__init__()
+            self._cached: set[str] = set()
+
+        def has_asset_cached(self, rid):
+            return rid in self._cached
+
+        def scan_window(self, offset, limit):
+            scans.append((offset, limit))
+            self._cached.add("r_warm_med")
+            return iter(())
+
+    client = WindowClient()
+    monkeypatch.setattr(preview_upgrade, "_client_for_account", lambda account: client)
+    photo = _remote_photo("r_warm_med")
+    photo.captured_at = datetime(2024, 6, 1, tzinfo=UTC)
+
+    preview_upgrade.enqueue_medium(tmp_path, photo)
+
+    dest = previews.remote_medium_dest(tmp_path, "luis@example.com", "r_warm_med")
+    _wait_for_content(dest)
+    assert scans, "warm window never ran for the medium tier"
+    assert client.calls == [("r_warm_med", "medium")]

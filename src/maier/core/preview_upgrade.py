@@ -74,8 +74,8 @@ _pending_lock = threading.Lock()
 # medium fetch for the same photo can be in flight at the same time (T34).
 _pending: set[tuple[str, str, str]] = set()
 
-# (account, remote_id) -> captured_at for pending THUMB fetches -- feeds the
-# window-warm offset math below. Best-effort metadata, cleaned with _pending.
+# (account, remote_id) -> captured_at for pending fetches (both tiers) --
+# feeds the window-warm offset math below. Cleaned with _pending.
 _thumb_meta_lock = threading.Lock()
 _thumb_meta: dict[tuple[str, str], object] = {}
 
@@ -110,7 +110,7 @@ def _warm_window(client, account: str, remote_id: str) -> None:
         if client.has_asset_cached(remote_id):
             return  # a concurrent warm already covered it
         with _pending_lock:
-            wanted = {rid for (a, rid, t) in _pending if a == account and t == "thumb"}
+            wanted = {rid for (a, rid, t) in _pending if a == account}
         wanted.add(remote_id)
         with _thumb_meta_lock:
             dates = [d for (a, rid), d in _thumb_meta.items() if a == account and rid in wanted]
@@ -184,8 +184,11 @@ def _fetch_one(
                 tier,
             )
             return
-        if tier == "thumb":
-            _warm_window(client, account, remote_id)
+        # Warm for EVERY tier: a cache-miss download falls back to the
+        # single-asset lookup Apple never answers (tarpits) -- mediums
+        # suffered exactly this until 2026-08-25 (CTO: review screen never
+        # sharpened) because warming was thumb-only at first.
+        _warm_window(client, account, remote_id)
         dest.parent.mkdir(parents=True, exist_ok=True)
         client.download(remote_id, version, dest)
     except Exception:
@@ -224,6 +227,9 @@ def enqueue_medium(folder: Path, photo: Photo) -> None:
     # Videos only expose an MP4 for "medium" -- the JPEG poster variant
     # is "medium_image" (same rule pull.py uses for its thumb tier).
     version = "medium_image" if photo.media_type == Photo.MEDIA_VIDEO else "medium"
+    if photo.captured_at is not None:
+        with _thumb_meta_lock:
+            _thumb_meta[(photo.account, photo.remote_id)] = photo.captured_at
     _enqueue(folder, photo, "medium", dest, version)
 
 

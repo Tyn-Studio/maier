@@ -125,4 +125,31 @@ STORAGES = {
     },
 }
 WHITENOISE_USE_FINDERS = True
+
+# All maier.* loggers also write to {folder}/.maier/logs/maier.log --
+# background workers (pull, downloads, preview_upgrade, icloud) log
+# failures there, so live issues are diagnosable from evidence instead of
+# console scrollback (added 2026-08-25 after a week of stderr-only
+# debugging). The logs dir is created above with the other MAIER_DIR dirs.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {
+        "maier": {"format": "%(asctime)s %(levelname)s %(name)s: %(message)s"},
+    },
+    "handlers": {
+        "maier_file": {
+            "class": "logging.handlers.RotatingFileHandler",
+            "filename": str(MAIER_DIR / "logs" / "maier.log"),
+            "maxBytes": 5 * 1024 * 1024,
+            "backupCount": 2,
+            "formatter": "maier",
+        },
+        "console": {"class": "logging.StreamHandler"},
+    },
+    "loggers": {
+        "maier": {"handlers": ["maier_file", "console"], "level": "INFO"},
+    },
+}
+
 WHITENOISE_AUTOREFRESH = DEBUG
