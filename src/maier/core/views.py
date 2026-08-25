@@ -175,6 +175,7 @@ def grid(request):
         "filter_from": effective_filters.get("from", ""),
         "filter_to": effective_filters.get("to", ""),
         "filter_dates_low": filters.get("dates") == "low",
+        "filter_order": filters.get("order", "asc"),
         "missing_count": queries.missing_photo_count(),
         "show_missing": filters.get("show") == "missing",
         "total_photo_count": queries.total_photo_count(),

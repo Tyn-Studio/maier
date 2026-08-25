@@ -2802,7 +2802,7 @@ def test_grid_filter_bar_uses_filter_field_wrapper_for_labelled_controls(client)
     response = client.get(reverse("grid"))
 
     filter_bar = _filter_bar_html(response.content.decode())
-    assert filter_bar.count('class="filter-field"') == 5
+    assert filter_bar.count('class="filter-field"') == 6  # +Order select (2026-08-25)
 
 
 @pytest.mark.django_db

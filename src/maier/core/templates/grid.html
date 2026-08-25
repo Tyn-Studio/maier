@@ -57,6 +57,13 @@
            hx-post="{% url 'settings' %}" hx-trigger="change delay:400ms" hx-swap="none"
            hx-vals='js:{working_from: document.getElementById("filter-from").value, working_to: document.getElementById("filter-to").value}'>
   </div>
+  <div class="filter-field">
+    <label for="filter-order">Order</label>
+    <select id="filter-order" name="order">
+      <option value="asc" {% if filter_order != "desc" %}selected{% endif %}>Oldest first</option>
+      <option value="desc" {% if filter_order == "desc" %}selected{% endif %}>Newest first</option>
+    </select>
+  </div>
   <div class="filter-field filter-field-checkbox">
     <label class="filter-checkbox">
       <input type="checkbox" name="dates" value="low" {% if filter_dates_low %}checked{% endif %}>

@@ -243,3 +243,37 @@ def test_distinct_provenances_includes_account_emails():
     _remote_photo("r1", account="maria@example.com")
 
     assert set(queries.distinct_provenances()) == {"apple-luis", "maria@example.com"}
+
+
+@pytest.mark.django_db
+def test_filtered_photos_order_param():
+    """`?order=desc` = newest first (CTO, 2026-08-25); default ascending."""
+    early = Photo.objects.create(
+        relative_path="t_order/a.jpg",
+        status=Photo.STATUS_OPTIONAL,
+        provenance="t_order",
+        file_size=1,
+        file_mtime=0.0,
+        captured_at=datetime(2025, 1, 1, tzinfo=UTC),
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+    )
+    late = Photo.objects.create(
+        relative_path="t_order/b.jpg",
+        status=Photo.STATUS_OPTIONAL,
+        provenance="t_order",
+        file_size=1,
+        file_mtime=0.0,
+        captured_at=datetime(2025, 6, 1, tzinfo=UTC),
+        captured_at_source="exif",
+        media_type=Photo.MEDIA_IMAGE,
+    )
+
+    asc = list(queries.filtered_photos({"provenance": "t_order"}).values_list("pk", flat=True))
+    desc = list(
+        queries.filtered_photos({"provenance": "t_order", "order": "desc"}).values_list(
+            "pk", flat=True
+        )
+    )
+    assert asc == [early.pk, late.pk]
+    assert desc == [late.pk, early.pk]

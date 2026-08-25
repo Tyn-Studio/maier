@@ -28,7 +28,15 @@ def filtered_photos(params: QueryDict | dict[str, Any]) -> QuerySet[Photo]:
     match anything in the missing view anyway.
     """
     show_missing = params.get("show") == "missing"
-    qs = Photo.objects.filter(missing=show_missing).order_by("captured_at", "pk")
+    # `?order=desc` flips to newest-first (CTO, 2026-08-25); default stays
+    # the SPEC's chronological ascending. Review's prev/next and the grid's
+    # pagination both derive from this same queryset, so the arrows follow
+    # whatever order the user chose.
+    if params.get("order") == "desc":
+        ordering = ("-captured_at", "-pk")
+    else:
+        ordering = ("captured_at", "pk")
+    qs = Photo.objects.filter(missing=show_missing).order_by(*ordering)
     if not show_missing:
         qs = qs.exclude(pk__in=phaseb.non_representative_pks())
         qs = qs.exclude(relative_path__in=phaseb.live_photo_companion_paths())
