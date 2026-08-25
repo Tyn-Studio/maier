@@ -1,10 +1,10 @@
 <div class="cell status-{{ photo.status }}{% if photo.missing %} cell-missing{% endif %}" id="cell-{{ photo.pk }}" data-pk="{{ photo.pk }}" tabindex="0">
   <a href="{% url 'review' photo.pk %}{% if querystring %}?{{ querystring }}{% endif %}">
     {% if photo.thumb_pending %}
-    <img id="cell-img-{{ photo.pk }}" loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
+    <img id="cell-img-{{ photo.pk }}" loading="lazy" src="{% url 'preview' photo.pk %}?v=0" alt="">
     {% include "_cell_thumb.html" %}
     {% else %}
-    <img loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
+    <img loading="lazy" src="{% url 'preview' photo.pk %}{% if photo.preview_v %}?v={{ photo.preview_v }}{% endif %}" alt="">
     {% endif %}
   </a>
   <span class="badge badge-{{ photo.status }}">{{ photo.get_status_display }}</span>

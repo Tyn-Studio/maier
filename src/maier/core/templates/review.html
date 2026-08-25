@@ -45,7 +45,7 @@
     {% comment %}Remote video: the original isn't local, so there's
     nothing to stream -- show the preview still with a note instead of a
     broken <video> hammering /stream with 404s.{% endcomment %}
-    <img class="review-image" src="{% url 'preview' photo.pk %}" alt="">
+    <img class="review-image" src="{% url 'preview' photo.pk %}{% if photo.preview_v %}?v={{ photo.preview_v }}{% endif %}" alt="">
     <p class="review-missing-note review-missing-note-overlay">iCloud video &mdash; plays after you select it (P) and its download finishes.</p>
     {% elif photo.media_type == "video" %}
     <video controls preload="metadata" class="review-image" src="{% url 'stream' photo.pk %}"></video>
@@ -90,7 +90,7 @@
   <div class="filmstrip">
     {% for f in filmstrip %}
     <a class="filmstrip-item{% if f.pk == photo.pk %} current{% endif %}" href="{% url 'review' f.pk %}{% if qs %}?{{ qs }}{% endif %}">
-      <img loading="lazy" src="{% url 'preview' f.pk %}" alt="">
+      <img loading="lazy" src="{% url 'preview' f.pk %}{% if f.preview_v %}?v={{ f.preview_v }}{% endif %}" alt="">
     </a>
     {% endfor %}
   </div>

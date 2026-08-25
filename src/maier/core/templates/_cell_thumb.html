@@ -10,7 +10,7 @@ with explicit context by views.cell_thumb on each step.
 {% endcomment %}
 {% if ready %}
 <span id="cell-thumb-{{ photo.pk }}" hidden></span>
-<img id="cell-img-{{ photo.pk }}" hx-swap-oob="outerHTML" loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
+<img id="cell-img-{{ photo.pk }}" hx-swap-oob="outerHTML" loading="lazy" src="{% url 'preview' photo.pk %}?v=1" alt="">
 {% elif tries|default:0 >= max_tries|default:999999 %}
 <span id="cell-thumb-{{ photo.pk }}" hidden></span>
 {% else %}

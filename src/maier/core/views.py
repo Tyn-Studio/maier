@@ -156,6 +156,7 @@ def grid(request):
         photo.is_live = bool(photo.live_photo_video_path)
         photo.download_pending = _download_pending(photo)
         photo.thumb_pending = _enqueue_missing_thumb(folder, photo)
+        _annotate_preview_v(folder, photo)
 
     scan_progress = _in_flight_scan_progress()
 
@@ -182,6 +183,7 @@ def grid(request):
 
 def review(request, pk):
     photo = get_object_or_404(Photo, pk=pk)
+    folder = settings.WORKING_FOLDER
     filters = request.GET
     ordered_pks = list(queries.filtered_photos(filters).values_list("pk", flat=True))
 
@@ -199,9 +201,11 @@ def review(request, pk):
     filmstrip = [photos_by_pk[fpk] for fpk in filmstrip_pks if fpk in photos_by_pk]
     for fphoto in filmstrip:
         fphoto.download_pending = _download_pending(fphoto)
+        _annotate_preview_v(folder, fphoto)
 
     dupe_count = phaseb.duplicate_counts().get(photo.sha256, 0) if photo.sha256 else 0
     photo.download_pending = _download_pending(photo)
+    _annotate_preview_v(folder, photo)
 
     context = {
         "photo": photo,
@@ -352,6 +356,24 @@ def set_status(request, pk):
     photo.is_live = bool(photo.live_photo_video_path)
     photo.download_pending = _download_pending(photo)
     return render(request, "_grid_cell.html", {"photo": photo, "querystring": qs})
+
+
+def _annotate_preview_v(folder, photo: Photo) -> None:
+    """Cache-busting rev for remote rows' /preview/<pk> URLs. v0.1.0/0.1.1
+    served PLACEHOLDERS with immutable 1-year caching -- browsers from that
+    era have gray squares pinned for the bare URL forever (live finding,
+    2026-08-25: thumbs on disk + correct serving, grid still gray). The rev
+    flips 0 -> 1 when the real thumb exists, changing the cache key exactly
+    once; the poisoned bare-URL entry is simply never consulted again.
+    Reuses the thumb_pending stat when the caller already computed it.
+    """
+    if photo.source != Photo.SOURCE_ICLOUD or not photo.remote_id:
+        photo.preview_v = ""
+        return
+    pending = getattr(photo, "thumb_pending", None)
+    if pending is None:
+        pending = not previews.remote_preview_dest(folder, photo.account, photo.remote_id).exists()
+    photo.preview_v = "0" if pending else "1"
 
 
 def _download_pending(photo: Photo) -> bool:

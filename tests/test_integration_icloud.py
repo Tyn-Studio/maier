@@ -213,8 +213,13 @@ def test_attach_pull_mixed_timeline_interleaved_by_capture_date(client):
     body = response.content.decode()
 
     def _pos(pk: int) -> int:
-        needle = f'"{reverse("preview", args=[pk])}"'
-        idx = body.index(needle)
+        # Remote rows carry a cache-bust rev ("?v=0/1", 2026-08-25) after
+        # the URL; match either the bare quoted URL or the rev'd one.
+        url = reverse("preview", args=[pk])
+        try:
+            idx = body.index(f'"{url}"')
+        except ValueError:
+            idx = body.index(f'"{url}?')
         assert idx >= 0
         return idx
 
@@ -226,8 +231,9 @@ def test_attach_pull_mixed_timeline_interleaved_by_capture_date(client):
     # Provenance filter (account slug) shows only that account's photos.
     response = client.get(reverse("grid"), {"provenance": slug})
     body = response.content.decode()
-    assert f'"{reverse("preview", args=[remote_r1.pk])}"' in body
-    assert f'"{reverse("preview", args=[remote_r2.pk])}"' in body
+    # Remote rows carry a cache-bust rev after the URL (2026-08-25).
+    assert f'"{reverse("preview", args=[remote_r1.pk])}?' in body
+    assert f'"{reverse("preview", args=[remote_r2.pk])}?' in body
     assert f'"{reverse("preview", args=[local_a.pk])}"' not in body
     assert f'"{reverse("preview", args=[local_b.pk])}"' not in body
 
