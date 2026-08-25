@@ -263,6 +263,15 @@ main {
   object-fit: cover;
 }
 
+/* T34: the self-heal poller (`_cell_thumb.html`) wraps its placeholder img
+   in a block-level div -- give it the same fill-the-cell sizing the img
+   alone got for free as a direct child of `.cell a`, so a pending remote
+   thumb's cell looks identical to a cached one. */
+.cell-thumb-poll {
+  width: 100%;
+  height: 100%;
+}
+
 .cell.status-selected {
   border-color: var(--green);
 }

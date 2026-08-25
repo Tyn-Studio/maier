@@ -15,6 +15,7 @@ urlpatterns = [
     path("preview/<int:pk>", views.preview, name="preview"),
     path("preview-sharp/<int:pk>", views.preview_sharp, name="preview-sharp"),
     path("sharp-status/<int:pk>", views.sharp_status, name="sharp-status"),
+    path("cell-thumb/<int:pk>", views.cell_thumb, name="cell-thumb"),
     path("stream/<int:pk>", views.stream, name="stream"),
     path("dupes", views.dupes, name="dupes"),
     path("dupes/<int:pair_id>/resolve", views.resolve_pair, name="resolve-pair"),

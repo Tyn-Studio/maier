@@ -52,6 +52,9 @@ NEIGHBOUR_WINDOW = 10
 SHARP_PREFETCH_RADIUS = 3
 SHARP_MAX_TRIES = 15  # ~12s of polling (load delay:800ms) before giving up
 
+# T34: grid-cell thumb self-heal poller (`_cell_thumb.html`/`cell_thumb`).
+CELL_THUMB_MAX_TRIES = 20  # ~40s of polling (load delay:2s) before giving up
+
 
 def healthz(request):
     return HttpResponse("ok")
@@ -152,6 +155,7 @@ def grid(request):
         photo.dupe_count = dupe_counts.get(photo.sha256, 0)
         photo.is_live = bool(photo.live_photo_video_path)
         photo.download_pending = _download_pending(photo)
+        photo.thumb_pending = _enqueue_missing_thumb(folder, photo)
 
     scan_progress = _in_flight_scan_progress()
 
@@ -265,6 +269,55 @@ def sharp_status(request, pk):
         "max_tries": SHARP_MAX_TRIES,
     }
     return render(request, "_review_sharp.html", context)
+
+
+def _enqueue_missing_thumb(folder, photo: Photo) -> bool:
+    """T34: for a visible-page remote row whose bulk-synced thumb hasn't
+    landed yet, kick off an on-demand fetch (`preview_upgrade.enqueue_thumb`)
+    instead of waiting for the whole-library backfill to reach it in its own
+    order. One `Path.exists()` stat per remote row on the page (~µs) --
+    cheap even at `PAGE_SIZE` (200). Local rows and remote rows that already
+    have a cached thumb are untouched (no stat needed for local rows,
+    `False` returned immediately) so the grid's fast path never gains an
+    extra request. The return value drives `_grid_cell.html`'s poller.
+    """
+    if photo.source != Photo.SOURCE_ICLOUD or not photo.remote_id:
+        return False
+    dest = previews.remote_preview_dest(folder, photo.account, photo.remote_id)
+    if dest.exists():
+        return False
+    preview_upgrade.enqueue_thumb(folder, photo)
+    return True
+
+
+def cell_thumb(request, pk):
+    """One step of a grid cell's thumbnail self-heal poll (T34, mirrors
+    `sharp_status`/`_review_sharp.html`'s recursive load-polling idiom): a
+    thumb that has landed ends the chain with the plain `<img>` markup
+    (identical to the cached-thumb fast path -- `_cell_thumb.html`); else
+    the poller re-renders with `tries+1`, capped at `CELL_THUMB_MAX_TRIES`
+    (~40s at `load delay:2s`) before giving up and leaving the placeholder
+    image (the whole-library backfill will still reach it eventually).
+    Re-issues `enqueue_thumb` on every poll (cheap no-op once cached or
+    already pending) so a worker restart mid-poll self-heals without
+    needing the grid page to be reloaded.
+    """
+    photo = get_object_or_404(Photo, pk=pk)
+    folder = settings.WORKING_FOLDER
+    tries = int(request.GET.get("tries") or 0)
+
+    dest = previews.remote_preview_dest(folder, photo.account, photo.remote_id or "")
+    ready = dest.exists()
+    if not ready:
+        preview_upgrade.enqueue_thumb(folder, photo)
+
+    context = {
+        "photo": photo,
+        "ready": ready,
+        "tries": tries,
+        "max_tries": CELL_THUMB_MAX_TRIES,
+    }
+    return render(request, "_cell_thumb.html", context)
 
 
 def set_status(request, pk):

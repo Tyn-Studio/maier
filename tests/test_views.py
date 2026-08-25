@@ -1871,6 +1871,148 @@ def test_sharp_status_stops_polling_after_max_tries(client):
     assert "v=medium" not in body
 
 
+# --- T34: on-demand grid thumbnail fetching ---------------------------------
+
+
+@pytest.mark.django_db
+def test_grid_enqueues_thumb_for_missing_thumb_remote_photos_only(client, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        views_module.preview_upgrade,
+        "enqueue_thumb",
+        lambda folder, photo: calls.append(photo.pk),
+    )
+    account = "t_t34_missing@example.com"
+    slug = remote_state.account_slug(account)
+    missing = _remote_db_photo("r_t_t34_missing", account=account, provenance=slug)
+    cached_id = "r_t_t34_cached"
+    cached = _remote_db_photo(
+        cached_id,
+        account=account,
+        provenance=slug,
+        captured_at=_CAPTURED.replace(hour=19),
+    )
+    cached_dest = previews_module.remote_preview_dest(settings.WORKING_FOLDER, account, cached_id)
+    cached_dest.parent.mkdir(parents=True, exist_ok=True)
+    cached_dest.write_bytes(b"cached-thumb")
+
+    response = client.get(reverse("grid"), {"provenance": slug})
+
+    assert response.status_code == 200
+    assert calls == [missing.pk]
+    assert cached.pk not in calls
+
+
+@pytest.mark.django_db
+def test_grid_sets_thumb_pending_flag(client, monkeypatch):
+    monkeypatch.setattr(views_module.preview_upgrade, "enqueue_thumb", lambda folder, photo: None)
+    account = "t_t34_flag@example.com"
+    slug = remote_state.account_slug(account)
+    pending = _remote_db_photo("r_t_t34_flag_pending", account=account, provenance=slug)
+    cached_id = "r_t_t34_flag_cached"
+    cached = _remote_db_photo(
+        cached_id,
+        account=account,
+        provenance=slug,
+        captured_at=_CAPTURED.replace(hour=19),
+    )
+    cached_dest = previews_module.remote_preview_dest(settings.WORKING_FOLDER, account, cached_id)
+    cached_dest.parent.mkdir(parents=True, exist_ok=True)
+    cached_dest.write_bytes(b"cached-thumb")
+
+    response = client.get(reverse("grid"), {"provenance": slug})
+
+    groups = response.context["day_groups"]
+    by_pk = {p.pk: p for g in groups for p in g["photos"]}
+    assert by_pk[pending.pk].thumb_pending is True
+    assert by_pk[cached.pk].thumb_pending is False
+
+
+@pytest.mark.django_db
+def test_grid_cell_poller_for_pending_and_plain_img_for_cached_thumb(client, monkeypatch):
+    monkeypatch.setattr(views_module.preview_upgrade, "enqueue_thumb", lambda folder, photo: None)
+    account = "t_t34_cellmarkup@example.com"
+    slug = remote_state.account_slug(account)
+    pending = _remote_db_photo("r_t_t34_cell_pending", account=account, provenance=slug)
+    cached_id = "r_t_t34_cell_cached"
+    cached = _remote_db_photo(
+        cached_id,
+        account=account,
+        provenance=slug,
+        captured_at=_CAPTURED.replace(hour=19),
+    )
+    cached_dest = previews_module.remote_preview_dest(settings.WORKING_FOLDER, account, cached_id)
+    cached_dest.parent.mkdir(parents=True, exist_ok=True)
+    cached_dest.write_bytes(b"cached-thumb")
+
+    response = client.get(reverse("grid"), {"provenance": slug})
+    body = response.content.decode()
+
+    assert f'id="cell-thumb-{pending.pk}"' in body
+    assert reverse("cell-thumb", args=[pending.pk]) in body
+    # Cached-thumb fast path: no poller markup, no extra requests -- plain
+    # <img> exactly as a local (never-remote) cell.
+    assert f'id="cell-thumb-{cached.pk}"' not in body
+    assert reverse("cell-thumb", args=[cached.pk]) not in body
+
+
+@pytest.mark.django_db
+def test_cell_thumb_endpoint_returns_final_img_when_file_exists(client):
+    account = "t_t34_endpoint@example.com"
+    remote_id = "r_t_t34_endpoint_ready"
+    photo = _remote_db_photo(remote_id, account=account)
+    dest = previews_module.remote_preview_dest(settings.WORKING_FOLDER, account, remote_id)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    dest.write_bytes(b"thumb-bytes")
+
+    response = client.get(reverse("cell-thumb", args=[photo.pk]), {"tries": 1})
+
+    body = response.content.decode()
+    assert "hx-get" not in body
+    assert reverse("preview", args=[photo.pk]) in body
+
+
+@pytest.mark.django_db
+def test_cell_thumb_endpoint_polls_and_reenqueues_when_not_ready(client, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        views_module.preview_upgrade,
+        "enqueue_thumb",
+        lambda folder, photo: calls.append(photo.pk),
+    )
+    photo = _remote_db_photo("r_t_t34_endpoint_poll")
+
+    response = client.get(reverse("cell-thumb", args=[photo.pk]), {"tries": 1})
+
+    body = response.content.decode()
+    assert "hx-get" in body
+    assert reverse("cell-thumb", args=[photo.pk]) in body
+    assert "tries=2" in body
+    assert calls == [photo.pk]
+
+
+@pytest.mark.django_db
+def test_cell_thumb_endpoint_stops_at_max_tries(client, monkeypatch):
+    calls: list[int] = []
+    monkeypatch.setattr(
+        views_module.preview_upgrade,
+        "enqueue_thumb",
+        lambda folder, photo: calls.append(photo.pk),
+    )
+    photo = _remote_db_photo("r_t_t34_endpoint_maxtries")
+
+    response = client.get(
+        reverse("cell-thumb", args=[photo.pk]), {"tries": views_module.CELL_THUMB_MAX_TRIES}
+    )
+
+    body = response.content.decode()
+    assert "hx-get" not in body
+    assert reverse("preview", args=[photo.pk]) in body
+    # Still not cached at max-tries -- the endpoint still re-enqueues (self-
+    # heal) even though it's giving up on polling this particular cell.
+    assert calls == [photo.pk]
+
+
 # --- T25 settings / export --------------------------------------------------
 
 
