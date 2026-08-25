@@ -98,13 +98,17 @@ def preview_sharp(request, pk):
         response["Cache-Control"] = "public, max-age=31536000, immutable"
         return response
 
-    medium_dest = previews.remote_medium_dest(folder, photo.account, photo.remote_id or "")
     path = previews.best_remote_preview(folder, photo)
     response = FileResponse(path.open("rb"), content_type="image/jpeg")
-    if path == medium_dest:
-        response["Cache-Control"] = "public, max-age=31536000, immutable"
-    else:
+    if path.name == previews._PLACEHOLDER_NAME:
+        # Placeholder = pending; must never stick in a cache.
         response["Cache-Control"] = "no-store"
+    else:
+        # Thumb AND medium are immutable now that callers rev the URL
+        # (?v=t / ?v=m, flipping when the medium lands, 2026-08-25) --
+        # the un-cached thumb refetched on every 800ms poll/page nav was
+        # the review screen's big-image flicker (CTO report).
+        response["Cache-Control"] = "public, max-age=31536000, immutable"
     return response
 
 
@@ -206,6 +210,21 @@ def review(request, pk):
     dupe_count = phaseb.duplicate_counts().get(photo.sha256, 0) if photo.sha256 else 0
     photo.download_pending = _download_pending(photo)
     _annotate_preview_v(folder, photo)
+    photo.sharp_v = _sharp_v(folder, photo)
+
+    # Seamless arrow-nav (CTO, 2026-08-25): preload the prev/next photos'
+    # main review images so navigation paints from browser cache instead of
+    # fetching after the click.
+    preload_urls = []
+    for npk in (prev_id, next_id):
+        if npk is None:
+            continue
+        nphoto = photos_by_pk.get(npk)
+        if nphoto is None:
+            continue
+        v = _sharp_v(folder, nphoto)
+        if v != "0":
+            preload_urls.append(f"{reverse('preview-sharp', args=[npk])}?v={v}")
 
     context = {
         "photo": photo,
@@ -217,6 +236,7 @@ def review(request, pk):
         "total": len(ordered_pks),
         "dupe_count": dupe_count,
         "filesize_display": queries.human_size(photo.file_size),
+        "preload_urls": preload_urls,
         **_sharp_preview_context(settings.WORKING_FOLDER, photo, ordered_pks, idx),
     }
     return render(request, "review.html", context)
@@ -356,6 +376,20 @@ def set_status(request, pk):
     photo.is_live = bool(photo.live_photo_video_path)
     photo.download_pending = _download_pending(photo)
     return render(request, "_grid_cell.html", {"photo": photo, "querystring": qs})
+
+
+def _sharp_v(folder, photo: Photo) -> str:
+    """URL rev for /preview-sharp: 'm' (medium cached), 't' (thumb only),
+    '0' (placeholder). Flips the cache key exactly when the served content
+    changes tier, letting every non-placeholder response be immutable.
+    """
+    if photo.source != Photo.SOURCE_ICLOUD or not photo.remote_id:
+        return "1"  # local rows: preview_path result, always immutable
+    if previews.remote_medium_dest(folder, photo.account, photo.remote_id).exists():
+        return "m"
+    if previews.remote_preview_dest(folder, photo.account, photo.remote_id).exists():
+        return "t"
+    return "0"
 
 
 def _annotate_preview_v(folder, photo: Photo) -> None:

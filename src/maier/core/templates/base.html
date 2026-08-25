@@ -132,6 +132,7 @@
       var overlay = document.getElementById("shortcuts-overlay");
 
       if (e.key === "?") {
+        e.preventDefault();
         overlay.classList.toggle("hidden");
         return;
       }
@@ -167,8 +168,8 @@
         else if (e.key === "p" || e.key === "P") { e.preventDefault(); click("#action-select"); }
         else if (e.key === "x" || e.key === "X") { e.preventDefault(); click("#action-reject"); }
         else if (e.key === "u" || e.key === "U") { e.preventDefault(); click("#action-undecide"); }
-        else if (e.key === "l" || e.key === "L") { toggleLivePhoto(); }
-        else if (e.key === "i" || e.key === "I") { toggleMetadataPanel(); }
+        else if (e.key === "l" || e.key === "L") { e.preventDefault(); toggleLivePhoto(); }
+        else if (e.key === "i" || e.key === "I") { e.preventDefault(); toggleMetadataPanel(); }
       } else if (page === "dupes") {
         if (e.key === "1") { click("#action-keep-left"); }
         else if (e.key === "2") { click("#action-keep-right"); }

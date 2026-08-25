@@ -129,6 +129,16 @@ class Photo(models.Model):
             ),
         ]
 
+    @property
+    def provenance_display(self) -> str:
+        """Explicit origin for the UI (CTO, 2026-08-25): "iCloud · account"
+        for remote-born rows (including downloaded ones, which keep their
+        `account`), "Local · folder" for filesystem rows.
+        """
+        if self.account:
+            return f"iCloud \u00b7 {self.account}"
+        return f"Local \u00b7 {self.provenance or 'root'}"
+
     def __str__(self) -> str:
         return self.relative_path
 

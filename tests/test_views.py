@@ -1786,7 +1786,10 @@ def test_review_local_photo_has_no_poller_markup(client):
 
 
 @pytest.mark.django_db
-def test_preview_sharp_serves_thumb_no_store_then_medium_immutable(client):
+def test_preview_sharp_serves_thumb_and_medium_immutable(client):
+    """2026-08-25: thumb-tier responses are immutable too, now that callers
+    rev the URL (?v=t/?v=m flips when the medium lands) -- the un-cached
+    thumb refetch on every poll/nav was the review flicker."""
     account = "luis@example.com"
     remote_id = "t22_sharp_serve"
     photo = _remote_db_photo(remote_id, account=account)
@@ -1794,9 +1797,9 @@ def test_preview_sharp_serves_thumb_no_store_then_medium_immutable(client):
     thumb_dest.parent.mkdir(parents=True, exist_ok=True)
     thumb_dest.write_bytes(b"thumb-bytes")
 
-    response = client.get(reverse("preview-sharp", args=[photo.pk]))
+    response = client.get(reverse("preview-sharp", args=[photo.pk]) + "?v=t")
     assert response.status_code == 200
-    assert response["Cache-Control"] == "no-store"
+    assert response["Cache-Control"] == "public, max-age=31536000, immutable"
     assert b"".join(response.streaming_content) == b"thumb-bytes"
 
     medium_dest = previews_module.remote_medium_dest(settings.WORKING_FOLDER, account, remote_id)
@@ -1840,8 +1843,10 @@ def test_sharp_status_polls_when_medium_absent(client):
     assert "hx-get" in body
     assert reverse("sharp-status", args=[photo.pk]) in body
     assert "tries=1" in body
-    assert reverse("preview-sharp", args=[photo.pk]) in body
-    assert "v=medium" not in body
+    # Flicker-free contract (2026-08-25): a poll step is ONLY the invisible
+    # span -- the review <img> is never re-rendered until the medium lands.
+    assert reverse("preview-sharp", args=[photo.pk]) not in body
+    assert "hx-swap-oob" not in body
 
 
 @pytest.mark.django_db
@@ -1857,7 +1862,8 @@ def test_sharp_status_returns_final_img_when_medium_ready(client):
 
     body = response.content.decode()
     assert "hx-get" not in body
-    assert "v=medium" in body
+    assert "hx-swap-oob" in body
+    assert "?v=m" in body
 
 
 @pytest.mark.django_db
@@ -1868,7 +1874,7 @@ def test_sharp_status_stops_polling_after_max_tries(client):
 
     body = response.content.decode()
     assert "hx-get" not in body
-    assert "v=medium" not in body
+    assert "?v=m" not in body
 
 
 # --- T34: on-demand grid thumbnail fetching ---------------------------------
