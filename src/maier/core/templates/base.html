@@ -137,6 +137,10 @@
         return;
       }
       if (e.key === "Escape") {
+        // Always claim Escape on our pages -- an unhandled keydown in the
+        // WKWebView window triggers the macOS alert beep (CTO, 2026-08-25),
+        // including when there's simply nothing for Escape to close.
+        e.preventDefault();
         if (overlay && !overlay.classList.contains("hidden")) {
           overlay.classList.add("hidden");
           return;
