@@ -159,9 +159,9 @@
         if (e.key === "ArrowRight") { e.preventDefault(); setFocus(focusedIndex + 1); }
         else if (e.key === "ArrowLeft") { e.preventDefault(); setFocus(focusedIndex - 1); }
         else if (e.key === " ") { e.preventDefault(); if (cell) click("a", cell); }
-        else if (e.key === "p" || e.key === "P") { if (cell) click('[data-action="select"]', cell); }
-        else if (e.key === "x" || e.key === "X") { if (cell) click('[data-action="reject"]', cell); }
-        else if (e.key === "u" || e.key === "U") { if (cell) click('[data-action="undecide"]', cell); }
+        else if (e.key === "p" || e.key === "P") { e.preventDefault(); if (cell) click('[data-action="select"]', cell); }
+        else if (e.key === "x" || e.key === "X") { e.preventDefault(); if (cell) click('[data-action="reject"]', cell); }
+        else if (e.key === "u" || e.key === "U") { e.preventDefault(); if (cell) click('[data-action="undecide"]', cell); }
       } else if (page === "review") {
         // preventDefault on every handled key: in the pywebview/WKWebView
         // window, an arrow keydown that bubbles unhandled to a page with
@@ -175,10 +175,10 @@
         else if (e.key === "l" || e.key === "L") { e.preventDefault(); toggleLivePhoto(); }
         else if (e.key === "i" || e.key === "I") { e.preventDefault(); toggleMetadataPanel(); }
       } else if (page === "dupes") {
-        if (e.key === "1") { click("#action-keep-left"); }
-        else if (e.key === "2") { click("#action-keep-right"); }
-        else if (e.key === "b" || e.key === "B") { click("#action-keep-both"); }
-        else if (e.key === "d" || e.key === "D") { click("#action-defer"); }
+        if (e.key === "1") { e.preventDefault(); click("#action-keep-left"); }
+        else if (e.key === "2") { e.preventDefault(); click("#action-keep-right"); }
+        else if (e.key === "b" || e.key === "B") { e.preventDefault(); click("#action-keep-both"); }
+        else if (e.key === "d" || e.key === "D") { e.preventDefault(); click("#action-defer"); }
       }
     });
   })();
