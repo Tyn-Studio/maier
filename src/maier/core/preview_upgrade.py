@@ -74,6 +74,74 @@ _pending_lock = threading.Lock()
 # medium fetch for the same photo can be in flight at the same time (T34).
 _pending: set[tuple[str, str, str]] = set()
 
+# (account, remote_id) -> captured_at for pending THUMB fetches -- feeds the
+# window-warm offset math below. Best-effort metadata, cleaned with _pending.
+_thumb_meta_lock = threading.Lock()
+_thumb_meta: dict[tuple[str, str], object] = {}
+
+_warm_locks_lock = threading.Lock()
+_warm_locks: dict[str, threading.Lock] = {}
+
+
+def _warm_lock(account: str) -> threading.Lock:
+    with _warm_locks_lock:
+        return _warm_locks.setdefault(account, threading.Lock())
+
+
+def _warm_window(client, account: str, remote_id: str) -> None:
+    """Jump the album enumeration to the pending thumbs' date and cache
+    their assets, so the downloads that follow go straight to CDN URLs.
+
+    Why: Apple answers positional list queries reliably but TARPITS
+    single-asset recordName lookups indefinitely (probed live, 2026-08-25 --
+    a lookup hung 150s+ even with session timeouts). The local DB mirror
+    turns a date into an approximate rank: the number of photos captured
+    after it. Probed live: offset math landed EXACTLY on the target date
+    8,096 deep, 60 assets in 5.2s, thumb in 1.1s.
+
+    Single-flight per account; duck-typed (fakes without `scan_window`/
+    `has_asset_cached` skip straight to direct downloads).
+    """
+    if not hasattr(client, "scan_window") or not hasattr(client, "has_asset_cached"):
+        return
+    if client.has_asset_cached(remote_id):
+        return
+    with _warm_lock(account):
+        if client.has_asset_cached(remote_id):
+            return  # a concurrent warm already covered it
+        with _pending_lock:
+            wanted = {rid for (a, rid, t) in _pending if a == account and t == "thumb"}
+        wanted.add(remote_id)
+        with _thumb_meta_lock:
+            dates = [d for (a, rid), d in _thumb_meta.items() if a == account and rid in wanted]
+        if not dates:
+            return
+        newest = max(dates)
+
+        from django.db import connection
+
+        try:
+            newer = (
+                Photo.objects.filter(
+                    source=Photo.SOURCE_ICLOUD, account=account, captured_at__gt=newest
+                )
+                .exclude(remote_id=None)
+                .count()
+            )
+        finally:
+            connection.close()
+
+        offset = max(0, newer - 25)
+        limit = min(400, len(wanted) * 4 + 120)
+        try:
+            for asset in client.scan_window(offset, limit):
+                wanted.discard(asset.remote_id)
+                if not wanted:
+                    break
+        except Exception:
+            logger.exception("preview_upgrade: window warm failed for %s", account)
+
+
 _clients_lock = threading.Lock()
 _clients: dict[str, object] = {}  # account -> client; only successes are cached
 
@@ -116,6 +184,8 @@ def _fetch_one(
                 tier,
             )
             return
+        if tier == "thumb":
+            _warm_window(client, account, remote_id)
         dest.parent.mkdir(parents=True, exist_ok=True)
         client.download(remote_id, version, dest)
     except Exception:
@@ -123,6 +193,8 @@ def _fetch_one(
     finally:
         with _pending_lock:
             _pending.discard((account, remote_id, tier))
+        with _thumb_meta_lock:
+            _thumb_meta.pop((account, remote_id), None)
 
 
 def _enqueue(folder: Path, photo: Photo, tier: str, dest: Path, version: str) -> None:
@@ -174,4 +246,7 @@ def enqueue_thumb(folder: Path, photo: Photo) -> None:
         return
 
     version = "thumb_image" if photo.media_type == Photo.MEDIA_VIDEO else "thumb"
+    if photo.captured_at is not None:
+        with _thumb_meta_lock:
+            _thumb_meta[(photo.account, photo.remote_id)] = photo.captured_at
     _enqueue(folder, photo, "thumb", dest, version)

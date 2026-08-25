@@ -2007,7 +2007,11 @@ def test_cell_thumb_endpoint_stops_at_max_tries(client, monkeypatch):
 
     body = response.content.decode()
     assert "hx-get" not in body
-    assert reverse("preview", args=[photo.pk]) in body
+    # Flicker-free contract (2026-08-25): max-tries returns only the inert
+    # hidden span -- the placeholder <img> already in the cell is left
+    # untouched (it was never part of the swapped element).
+    assert f'id="cell-thumb-{photo.pk}"' in body
+    assert reverse("preview", args=[photo.pk]) not in body
     # Still not cached at max-tries -- the endpoint still re-enqueues (self-
     # heal) even though it's giving up on polling this particular cell.
     assert calls == [photo.pk]

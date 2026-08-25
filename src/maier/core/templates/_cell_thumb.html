@@ -1,23 +1,18 @@
 {% comment %}
-T34: self-healing poller for a grid cell's remote thumbnail. Mirrors
-`_review_sharp.html`'s recursive load-poll idiom, at grid-cell scale:
-`_grid_cell.html` includes this bare (no extra context) for a photo whose
-`preview_upgrade.enqueue_thumb` fetch is still pending -- `tries`/`max_tries`
-resolve via the `default` filter below since the include has no context for
-them, so the first poll always requests `?tries=1`. `views.cell_thumb`
-re-renders this same partial with an explicit `ready`/`tries`/`max_tries`
-context on every poll step. A thumb that has landed, or `max_tries`
-exhausted (~40s at `load delay:2s`), ends the chain with the plain `<img>`
--- identical markup to the cached-thumb fast path, so a landed swap leaves
-no trace of ever having polled (the whole-library backfill still reaches
-anything that timed out here).
+T34 self-healing grid-cell thumbnail poller, flicker-free (2026-08-25 fix):
+the placeholder <img> is rendered ONCE by _grid_cell.html and never
+re-rendered per poll -- polling swaps only this invisible <span>, and when
+the thumb lands the response carries an hx-swap-oob <img> that replaces the
+placeholder by id exactly once. (The first version wrapped the img in the
+poller: every 2s swap refetched the no-store placeholder -- visible flicker,
+CTO report.) Rendered bare by _grid_cell.html (tries defaults to 0) and
+with explicit context by views.cell_thumb on each step.
 {% endcomment %}
 {% if ready %}
-<img loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
+<span id="cell-thumb-{{ photo.pk }}" hidden></span>
+<img id="cell-img-{{ photo.pk }}" hx-swap-oob="outerHTML" loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
 {% elif tries|default:0 >= max_tries|default:999999 %}
-<img loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
+<span id="cell-thumb-{{ photo.pk }}" hidden></span>
 {% else %}
-<div id="cell-thumb-{{ photo.pk }}" class="cell-thumb-poll" hx-get="{% url 'cell-thumb' photo.pk %}?tries={{ tries|default:0|add:1 }}" hx-trigger="load delay:2s" hx-swap="outerHTML">
-  <img loading="lazy" src="{% url 'preview' photo.pk %}" alt="">
-</div>
+<span id="cell-thumb-{{ photo.pk }}" hidden hx-get="{% url 'cell-thumb' photo.pk %}?tries={{ tries|default:0|add:1 }}" hx-trigger="load delay:2s" hx-swap="outerHTML"></span>
 {% endif %}

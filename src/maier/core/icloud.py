@@ -199,6 +199,23 @@ class ICloudClient:
     def __init__(self, account: str, service: object) -> None:
         self.account = account
         self._service = service
+        # v0.1.3's socket.setdefaulttimeout was INEFFECTIVE for pyicloud:
+        # requests always passes an explicit timeout (None) to urllib3,
+        # which overrides the global socket default -- probed live
+        # 2026-08-25: a tarpitted lookup still hung 150s+. Force a real
+        # timeout at the one choke point every request passes through.
+        try:
+            session = service.session
+            orig_send = session.send
+
+            def _send_with_timeout(request, **kwargs):
+                if kwargs.get("timeout") is None:
+                    kwargs["timeout"] = 30
+                return orig_send(request, **kwargs)
+
+            session.send = _send_with_timeout
+        except Exception:
+            pass  # fakes/tests without a session
         # Populated as list_assets() iterates; download() consults it first
         # and falls back to a direct `photos.all.get(id)` lookup on a miss
         # (e.g. download() called in a fresh process/client without a prior
@@ -301,6 +318,36 @@ class ICloudClient:
                 yield remote_asset
         except _PYICLOUD_ERRORS as exc:
             raise ICloudError(f"Listing iCloud assets failed: {exc}") from exc
+
+    def scan_window(self, offset: int, limit: int) -> Iterator[RemoteAsset]:
+        """Enumerate up to `limit` assets starting at `offset` in the album's
+        newest-first order, populating the asset cache (so `download()` for
+        anything yielded goes straight to its CDN URL). This positional list
+        query is the ONLY asset query Apple reliably answers -- single-asset
+        recordName lookups tarpit indefinitely (probed live, 2026-08-25).
+        Callers compute `offset` from the local DB mirror: the number of
+        photos captured AFTER the target date ≈ the target's rank.
+        """
+        try:
+            from pyicloud.services.photos_cloudkit.constants import DirectionEnum
+
+            album = self._service.photos.all
+            yielded = 0
+            page = max(32, min(limit, 100))
+            while yielded < limit:
+                got_any = False
+                for asset in album._get_photos_at(offset, DirectionEnum.ASCENDING, page):
+                    got_any = True
+                    self._asset_cache[asset.id] = asset
+                    yield _to_remote_asset(asset)
+                    yielded += 1
+                    offset += 1
+                    if yielded >= limit:
+                        return
+                if not got_any:
+                    return
+        except _PYICLOUD_ERRORS as exc:
+            raise ICloudError(f"Window scan at offset {offset} failed: {exc}") from exc
 
     def has_asset_cached(self, remote_id: str) -> bool:
         """True when `download(remote_id, ...)` can run without an album

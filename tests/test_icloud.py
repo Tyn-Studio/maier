@@ -672,6 +672,9 @@ def test_public_surface_is_read_only():
         # read-only cache introspection (pull.py defers cache-miss bulk
         # fetches during enumeration -- 2026-08-24 worker-starvation fix)
         "has_asset_cached",
+        # read-only positional window enumeration (preview_upgrade's warm
+        # path -- the only asset query Apple reliably answers, 2026-08-25)
+        "scan_window",
         # T21: deletes OUR OWN session-token store on disk -- never touches
         # pyicloud/Apple's API, so it doesn't violate read-only (see
         # `forget_session`'s docstring in icloud.py).
